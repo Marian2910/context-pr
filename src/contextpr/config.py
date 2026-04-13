@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Mapping, Self
+from typing import Self
 
 from dotenv import load_dotenv
 
