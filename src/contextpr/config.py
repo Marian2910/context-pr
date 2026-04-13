@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
+DEFAULT_GITHUB_API_URL = "https://api.github.com"
+DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
+DEFAULT_LOG_LEVEL = "INFO"
+
 
 class ConfigurationError(ValueError):
     """Raised when required configuration values are missing."""
@@ -22,13 +26,13 @@ class Settings:
     """Application settings loaded from environment variables."""
 
     github_token: str | None = None
-    github_api_url: str = "https://api.github.com"
+    github_api_url: str = DEFAULT_GITHUB_API_URL
     github_repository: str | None = None
     sonar_token: str | None = None
-    sonar_host_url: str = "https://sonarcloud.io"
+    sonar_host_url: str = DEFAULT_SONAR_HOST_URL
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
-    log_level: str = "INFO"
+    log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Self:
@@ -36,27 +40,26 @@ class Settings:
         env = os.environ if environ is None else environ
         return cls(
             github_token=_read_optional(env, "CONTEXTPR_GITHUB_TOKEN"),
-            github_api_url=(
-                _read_optional(
-                    env,
-                    "CONTEXTPR_GITHUB_API_URL",
-                    default="https://api.github.com",
-                )
-                or "https://api.github.com"
-            ),
+            github_api_url=_read_optional(
+                env,
+                "CONTEXTPR_GITHUB_API_URL",
+                default=DEFAULT_GITHUB_API_URL,
+            )
+            or DEFAULT_GITHUB_API_URL,
             github_repository=_read_optional(env, "CONTEXTPR_GITHUB_REPOSITORY"),
             sonar_token=_read_optional(env, "CONTEXTPR_SONAR_TOKEN"),
-            sonar_host_url=(
-                _read_optional(
-                    env,
-                    "CONTEXTPR_SONAR_HOST_URL",
-                    default="https://sonarcloud.io",
-                )
-                or "https://sonarcloud.io"
-            ),
+            sonar_host_url=_read_optional(
+                env,
+                "CONTEXTPR_SONAR_HOST_URL",
+                default=DEFAULT_SONAR_HOST_URL,
+            )
+            or DEFAULT_SONAR_HOST_URL,
             sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
             sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
-            log_level=(_read_optional(env, "CONTEXTPR_LOG_LEVEL", default="INFO") or "INFO").upper(),
+            log_level=(
+                _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
+                or DEFAULT_LOG_LEVEL
+            ).upper(),
         )
 
     @property
