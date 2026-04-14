@@ -13,6 +13,7 @@ The current codebase establishes the development infrastructure and package boun
 - `contextpr.cli` exposes the command line interface.
 - `contextpr.config` centralizes environment-backed settings.
 - `contextpr.logging_config` sets structured-friendly logging defaults.
+- `action.yml` exposes the packaged CLI as a reusable GitHub Action.
 - `contextpr.integrations` will own external API communication.
 - `contextpr.enrichment` will own historical retrieval and NLP-assisted explanation logic.
 - `contextpr.models` contains typed domain objects shared across modules.
@@ -24,6 +25,12 @@ The current codebase establishes the development infrastructure and package boun
 CLI -> configuration -> SonarQube client -> enrichment services -> GitHub client
 ```
 
+When used through GitHub Actions, the flow becomes:
+
+```text
+Workflow -> action.yml -> Docker container -> contextpr analyze
+```
+
 A likely future orchestration flow is:
 
 1. Resolve configuration and runtime options.
@@ -31,6 +38,19 @@ A likely future orchestration flow is:
 3. Look up historical context from previous issues, files, or pull requests.
 4. Compose concise review comments.
 5. Post or preview inline GitHub review comments.
+
+## Reusable action packaging
+
+The repository is set up so the Python package remains the source of truth and the GitHub
+Action acts only as a wrapper around it.
+
+- `action.yml` defines the public inputs exposed to consuming repositories.
+- `Dockerfile` packages a stable Python runtime plus the installed `contextpr` package.
+- `scripts/action-entrypoint.sh` maps GitHub Action inputs to environment variables and
+  invokes the CLI.
+
+This keeps local development and automation aligned. A feature added to the CLI becomes
+available to the GitHub Action without duplicating the implementation in a separate codebase.
 
 ## Extension points
 

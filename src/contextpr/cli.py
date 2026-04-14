@@ -9,7 +9,11 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
+from contextpr.integrations.github import GitHubClient
+from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
+from contextpr.models import PullRequestRef
+from contextpr.services import AnalysisService
 
 app = typer.Typer(
     help=(
@@ -62,19 +66,41 @@ def analyze(
         ),
     ] = True,
 ) -> None:
-    """Run the placeholder analysis pipeline."""
+    """Run the MVP analysis pipeline."""
     settings = Settings.from_env()
     configure_logging(settings.log_level)
+    settings.require(
+        "github_app_id",
+        "github_installation_id",
+        "github_private_key",
+        "github_repository",
+        "sonar_token",
+        "sonar_project_key",
+    )
 
-    target = f"PR #{pr_number}" if pr_number is not None else "the configured pull request"
+    if pr_number is None:
+        raise typer.BadParameter("A pull request number is required for analyze.")
+
+    pull_request = PullRequestRef(
+        repository=settings.github_repository or "",
+        number=pr_number,
+    )
+    service = AnalysisService(
+        github_client=GitHubClient(settings),
+        sonar_client=SonarQubeClient(settings),
+    )
+
     logger.info(
         "Analyze command invoked.",
-        extra={"pr_number": pr_number or "auto", "dry_run": dry_run},
+        extra={"pr_number": pr_number, "dry_run": dry_run},
     )
+    result = service.analyze_pull_request(pull_request=pull_request, dry_run=dry_run)
     typer.echo(
-        "ContextPR scaffold is installed. "
-        f"Placeholder analyze command invoked for {target}. "
-        "GitHub and SonarQube integrations will be implemented in a later step."
+        "ContextPR analyzed "
+        f"PR #{result.pull_request.number}: fetched {result.fetched_issues} Sonar issues, "
+        f"prepared {result.eligible_issues} inline comments, "
+        f"deleted {result.deleted_comments} previous ContextPR comments, "
+        f"posted {result.posted_comments}."
     )
 
 

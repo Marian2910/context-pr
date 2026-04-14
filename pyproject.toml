@@ -13,6 +13,7 @@ authors = [
   { name = "ContextPR Contributors" },
 ]
 dependencies = [
+  "PyJWT[crypto]>=2.10.1,<3.0.0",
   "python-dotenv>=1.0.1,<2.0.0",
   "typer>=0.12.3,<1.0.0",
 ]
@@ -32,6 +33,7 @@ packages = ["src/contextpr"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
+DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 DEFAULT_LOG_LEVEL = "INFO"
 
@@ -26,7 +27,9 @@ class ConfigurationError(ValueError):
 class Settings:
     """Application settings loaded from environment variables."""
 
-    github_token: str | None = None
+    github_app_id: str | None = None
+    github_installation_id: str | None = None
+    github_private_key: str | None = None
     github_api_url: str = DEFAULT_GITHUB_API_URL
     github_repository: str | None = None
     sonar_token: str | None = None
@@ -40,7 +43,9 @@ class Settings:
         """Build settings from a mapping of environment variables."""
         env = os.environ if environ is None else environ
         return cls(
-            github_token=_read_optional(env, "CONTEXTPR_GITHUB_TOKEN"),
+            github_app_id=_read_optional(env, "CONTEXTPR_GITHUB_APP_ID"),
+            github_installation_id=_read_optional(env, "CONTEXTPR_GITHUB_INSTALLATION_ID"),
+            github_private_key=_read_github_private_key(),
             github_api_url=_read_optional(
                 env,
                 "CONTEXTPR_GITHUB_API_URL",
@@ -66,7 +71,24 @@ class Settings:
     @property
     def github_enabled(self) -> bool:
         """Return whether GitHub credentials look usable."""
-        return bool(self.github_token and self.github_repository)
+        return bool(self.github_app_enabled and self.github_repository)
+
+    @property
+    def github_app_enabled(self) -> bool:
+        """Return whether GitHub App credentials are present."""
+        return bool(
+            self.github_app_id
+            and self.github_installation_id
+            and self.github_private_key
+        )
+
+    @property
+    def github_auth_mode(self) -> str:
+        """Return the configured GitHub authentication mode."""
+        if self.github_app_enabled:
+            return "app"
+
+        return "none"
 
     @property
     def sonar_enabled(self) -> bool:
@@ -100,3 +122,13 @@ def _read_optional(
 
     value = raw_value.strip()
     return value or default
+
+
+def _read_github_private_key() -> str | None:
+    """Read the GitHub App private key from the local secrets directory."""
+    key_path = Path.cwd() / DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH
+    if not key_path.is_file():
+        return None
+
+    value = key_path.read_text(encoding="utf-8").strip()
+    return value or None
