@@ -6,7 +6,7 @@ ContextPR is intended to connect static analysis findings with pull request revi
 The long-term goal is to fetch SonarQube or SonarCloud pull request issues, enrich them with
 historical repository context, and publish high-signal inline review comments on GitHub.
 
-## Current scaffold
+## Current codebase
 
 The current codebase establishes the development infrastructure and package boundaries:
 

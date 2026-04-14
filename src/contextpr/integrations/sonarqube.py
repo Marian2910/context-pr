@@ -1,5 +1,3 @@
-"""SonarQube and SonarCloud integration placeholders."""
-
 from __future__ import annotations
 
 import base64
@@ -14,7 +12,6 @@ from contextpr.models import IssueLocation, SonarIssue
 
 
 class SonarQubeClient:
-    """Placeholder client for SonarQube and SonarCloud pull request analysis."""
 
     def __init__(self, settings: Settings) -> None:
         """Initialize the client with application settings."""
@@ -25,12 +22,28 @@ class SonarQubeClient:
         return self._settings.sonar_enabled
 
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        """Fetch issues associated with a pull request analysis.
-
-        Future implementations can map Sonar API responses into typed domain models.
-        """
+        """Fetch issues associated with a pull request analysis."""
         self._settings.require("sonar_token", "sonar_project_key")
 
+        request = self._build_issues_request(pull_request_number)
+        payload = self._execute_request(request)
+
+        issues = payload.get("issues", [])
+        if not isinstance(issues, list):
+            return []
+
+        return [
+            issue
+            for raw_issue in issues
+            if (issue := self._map_issue(raw_issue)) is not None
+        ]
+
+    def fetch_quality_gate_status(self, pull_request_number: int) -> str:
+        """Fetch the quality gate status for a pull request analysis."""
+        raise NotImplementedError("SonarQube quality gate retrieval is not implemented yet.")
+
+    def _build_issues_request(self, pull_request_number: int) -> Request:
+        """Build the HTTP request for fetching issues."""
         params = urlencode(
             {
                 "componentKeys": self._settings.sonar_project_key,
@@ -38,7 +51,8 @@ class SonarQubeClient:
                 "resolved": "false",
             }
         )
-        request = Request(
+
+        return Request(
             url=f"{self._api_url('/api/issues/search')}?{params}",
             headers={
                 "Accept": "application/json",
@@ -46,18 +60,11 @@ class SonarQubeClient:
             },
         )
 
+    @staticmethod
+    def _execute_request(request: Request) -> Mapping[str, object]:
+        """Execute an HTTP request and return JSON payload."""
         with urlopen(request) as response:
-            payload = json.load(response)
-
-        issues = payload.get("issues", [])
-        if not isinstance(issues, list):
-            return []
-
-        return [issue for raw_issue in issues if (issue := self._map_issue(raw_issue)) is not None]
-
-    def fetch_quality_gate_status(self, pull_request_number: int) -> str:
-        """Fetch the quality gate status for a pull request analysis."""
-        raise NotImplementedError("SonarQube quality gate retrieval is not implemented yet.")
+            return cast(Mapping[str, object], json.load(response))
 
     def _api_url(self, path: str) -> str:
         """Build a full Sonar API URL from a relative path."""
@@ -76,53 +83,99 @@ class SonarQubeClient:
         if not isinstance(component, str) or ":" not in component:
             return None
 
+        fields = SonarQubeClient._extract_issue_fields(payload)
+        if fields is None:
+            return None
+
+        path = component.split(":", maxsplit=1)[1]
+        issue_key, rule, severity, message, line = fields
+
+        return SonarIssue(
+            key=issue_key,
+            rule=rule,
+            severity=severity,
+            message=message,
+            location=IssueLocation(path=path, line=line),
+        )
+
+    @staticmethod
+    def _extract_issue_fields(
+        payload: Mapping[str, object],
+    ) -> tuple[str, str, str, str, int | None] | None:
+        """Extract and validate issue fields."""
         issue_key = payload.get("key")
         rule = payload.get("rule")
         severity = payload.get("severity")
         message = payload.get("message")
-        line = SonarQubeClient._extract_line(payload)
 
         if not all(isinstance(value, str) for value in (issue_key, rule, severity, message)):
             return None
 
-        path = component.split(":", maxsplit=1)[1]
-        return SonarIssue(
-            key=cast(str, issue_key),
-            rule=cast(str, rule),
-            severity=cast(str, severity),
-            message=cast(str, message),
-            location=IssueLocation(path=path, line=line),
+        return (
+            cast(str, issue_key),
+            cast(str, rule),
+            cast(str, severity),
+            cast(str, message),
+            SonarQubeClient._extract_line(payload),
         )
 
     @staticmethod
     def _extract_line(payload: Mapping[str, object]) -> int | None:
         """Extract the most useful line number from a Sonar issue payload."""
-        text_range = payload.get("textRange")
-        if isinstance(text_range, Mapping):
-            start_line = text_range.get("startLine")
-            if isinstance(start_line, int):
-                return start_line
+        return (
+            SonarQubeClient._line_from_text_range(payload)
+            or SonarQubeClient._line_from_flows(payload)
+        )
 
+    @staticmethod
+    def _line_from_text_range(payload: Mapping[str, object]) -> int | None:
+        """Extract line directly from payload.textRange."""
+        return SonarQubeClient._get_start_line(payload.get("textRange"))
+
+    @staticmethod
+    def _line_from_flows(payload: Mapping[str, object]) -> int | None:
+        """Extract line from flows."""
         flows = payload.get("flows")
         if not isinstance(flows, list):
             return None
 
         for flow in flows:
-            if not isinstance(flow, Mapping):
-                continue
+            line = SonarQubeClient._line_from_flow(flow)
+            if line is not None:
+                return line
 
-            locations = flow.get("locations")
-            if not isinstance(locations, list):
-                continue
+        return None
 
-            for location in locations:
-                if not isinstance(location, Mapping):
-                    continue
+    @staticmethod
+    def _line_from_flow(flow: object) -> int | None:
+        """Extract line from a single flow."""
+        if not isinstance(flow, Mapping):
+            return None
 
-                text_range = location.get("textRange")
-                if isinstance(text_range, Mapping):
-                    start_line = text_range.get("startLine")
-                    if isinstance(start_line, int):
-                        return start_line
+        locations = flow.get("locations")
+        if not isinstance(locations, list):
+            return None
 
+        for location in locations:
+            line = SonarQubeClient._line_from_location(location)
+            if line is not None:
+                return line
+
+        return None
+
+    @staticmethod
+    def _line_from_location(location: object) -> int | None:
+        """Extract line from a single location."""
+        if not isinstance(location, Mapping):
+            return None
+
+        return SonarQubeClient._get_start_line(location.get("textRange"))
+
+    @staticmethod
+    def _get_start_line(text_range: object) -> int | None:
+        """Safely extract startLine from a textRange object."""
+        if isinstance(text_range, Mapping):
+            start_line = text_range.get("startLine")
+            if isinstance(start_line, int):
+                return start_line
         return None

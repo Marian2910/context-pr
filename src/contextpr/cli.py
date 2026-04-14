@@ -1,5 +1,3 @@
-"""Command line interface for ContextPR."""
-
 from __future__ import annotations
 
 import logging

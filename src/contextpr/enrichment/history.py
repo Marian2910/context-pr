@@ -1,5 +1,3 @@
-"""Historical context enrichment placeholders."""
-
 from __future__ import annotations
 
 from contextpr.models import SonarIssue

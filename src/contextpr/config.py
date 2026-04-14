@@ -1,5 +1,3 @@
-"""Configuration loading for ContextPR."""
-
 from __future__ import annotations
 
 import os
