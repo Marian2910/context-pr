@@ -7,6 +7,7 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
+from contextpr.enrichment import IntentClassifier
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -86,6 +87,7 @@ def analyze(
     service = AnalysisService(
         github_client=GitHubClient(settings),
         sonar_client=SonarQubeClient(settings),
+        intent_classifier=IntentClassifier(settings.intent_model_path),
     )
 
     logger.info(

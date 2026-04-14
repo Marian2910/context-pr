@@ -88,7 +88,7 @@ class SonarQubeClient:
             return None
 
         path = component.split(":", maxsplit=1)[1]
-        issue_key, rule, severity, message, line = fields
+        issue_key, rule, severity, message, line, issue_type = fields
 
         return SonarIssue(
             key=issue_key,
@@ -96,19 +96,30 @@ class SonarQubeClient:
             severity=severity,
             message=message,
             location=IssueLocation(path=path, line=line),
+            issue_type=issue_type,
+            tags=SonarQubeClient._extract_tags(payload),
+            clean_code_attribute=SonarQubeClient._extract_string(payload, "cleanCodeAttribute"),
+            clean_code_attribute_category=SonarQubeClient._extract_string(
+                payload,
+                "cleanCodeAttributeCategory",
+            ),
         )
 
     @staticmethod
     def _extract_issue_fields(
         payload: Mapping[str, object],
-    ) -> tuple[str, str, str, str, int | None] | None:
+    ) -> tuple[str, str, str, str, int | None, str] | None:
         """Extract and validate issue fields."""
         issue_key = payload.get("key")
         rule = payload.get("rule")
         severity = payload.get("severity")
         message = payload.get("message")
+        issue_type = payload.get("type")
 
-        if not all(isinstance(value, str) for value in (issue_key, rule, severity, message)):
+        if not all(
+            isinstance(value, str)
+            for value in (issue_key, rule, severity, message, issue_type)
+        ):
             return None
 
         return (
@@ -117,7 +128,26 @@ class SonarQubeClient:
             cast(str, severity),
             cast(str, message),
             SonarQubeClient._extract_line(payload),
+            cast(str, issue_type),
         )
+
+    @staticmethod
+    def _extract_tags(payload: Mapping[str, object]) -> tuple[str, ...]:
+        """Extract issue tags from the Sonar payload."""
+        tags = payload.get("tags")
+        if not isinstance(tags, list):
+            return ()
+
+        return tuple(str(tag) for tag in tags if isinstance(tag, str))
+
+    @staticmethod
+    def _extract_string(payload: Mapping[str, object], key: str) -> str:
+        """Extract a string field from the payload or return an empty value."""
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+
+        return ""
 
     @staticmethod
     def _extract_line(payload: Mapping[str, object]) -> int | None:

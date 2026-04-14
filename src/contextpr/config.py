@@ -13,6 +13,7 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
+DEFAULT_INTENT_MODEL_PATH = Path("artifacts/intent_classifier.joblib")
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 DEFAULT_LOG_LEVEL = "INFO"
 
@@ -34,6 +35,7 @@ class Settings:
     sonar_host_url: str = DEFAULT_SONAR_HOST_URL
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
+    intent_model_path: Path = DEFAULT_INTENT_MODEL_PATH
     log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
@@ -60,6 +62,11 @@ class Settings:
             or DEFAULT_SONAR_HOST_URL,
             sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
             sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
+            intent_model_path=_read_path(
+                env,
+                "CONTEXTPR_INTENT_MODEL_PATH",
+                default=DEFAULT_INTENT_MODEL_PATH,
+            ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
                 or DEFAULT_LOG_LEVEL
@@ -130,3 +137,17 @@ def _read_github_private_key() -> str | None:
 
     value = key_path.read_text(encoding="utf-8").strip()
     return value or None
+
+
+def _read_path(
+    environ: Mapping[str, str],
+    key: str,
+    *,
+    default: Path,
+) -> Path:
+    """Read an optional filesystem path from the environment."""
+    value = _read_optional(environ, key)
+    if value is None:
+        return default
+
+    return Path(value)
