@@ -38,10 +38,6 @@ class SonarQubeClient:
             if (issue := self._map_issue(raw_issue)) is not None
         ]
 
-    def fetch_quality_gate_status(self, pull_request_number: int) -> str:
-        """Fetch the quality gate status for a pull request analysis."""
-        raise NotImplementedError("SonarQube quality gate retrieval is not implemented yet.")
-
     def _build_issues_request(self, pull_request_number: int) -> Request:
         """Build the HTTP request for fetching issues."""
         params = urlencode(

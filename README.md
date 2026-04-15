@@ -5,8 +5,7 @@ with historical context and publishing actionable inline feedback on GitHub pull
 
 The current repository contains the initial production-ready scaffold only. It provides a
 small reusable package, a CLI entry point, a reusable GitHub Action wrapper, configuration
-loading, placeholder integrations, tests, and CI so the business logic can be added
-incrementally.
+loading, integrations, tests, and CI so the business logic can be added incrementally.
 
 ## Architecture at a glance
 
@@ -115,9 +114,8 @@ jobs:
           dry-run: "true"
 ```
 
-At the moment, the Action wraps the placeholder `contextpr analyze` command. As the Python
-implementation grows, the GitHub Action automatically benefits from the same logic because it
-simply delegates to the packaged CLI.
+The Action wraps `contextpr analyze`. As the Python implementation grows, the GitHub Action
+automatically benefits from the same logic because it simply delegates to the packaged CLI.
 
 To let the GitHub Action authenticate as a bot identity, configure your repository or
 organization secrets for the GitHub App and map them to the environment variables expected by

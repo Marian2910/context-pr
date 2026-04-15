@@ -1,0 +1,47 @@
+name: "ContextPR"
+description: "Run ContextPR against a pull request and prepare contextual Sonar feedback."
+author: "ContextPR Contributors"
+
+inputs:
+  github-token:
+    description: "GitHub token used for pull request comment operations."
+    required: false
+  github-api-url:
+    description: "Base GitHub API URL."
+    required: false
+    default: "https://api.github.com"
+  github-repository:
+    description: "Repository in owner/name form. Defaults to the workflow repository."
+    required: false
+  sonar-token:
+    description: "SonarQube or SonarCloud token."
+    required: false
+  sonar-host-url:
+    description: "Base SonarQube or SonarCloud URL."
+    required: false
+    default: "https://sonarcloud.io"
+  sonar-organization:
+    description: "Sonar organization identifier."
+    required: false
+  sonar-project-key:
+    description: "Sonar project key."
+    required: false
+  pr-number:
+    description: "Pull request number to analyze."
+    required: false
+  dry-run:
+    description: "Whether to avoid posting changes and only preview the flow."
+    required: false
+    default: "true"
+  log-level:
+    description: "Application log level."
+    required: false
+    default: "INFO"
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+
+branding:
+  icon: "message-square"
+  color: "blue"
