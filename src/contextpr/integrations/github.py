@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
-    """Placeholder client for GitHub pull request interactions."""
+    """GitHub client for pull request interactions."""
 
     def __init__(self, settings: Settings) -> None:
         """Initialize the client with application settings."""

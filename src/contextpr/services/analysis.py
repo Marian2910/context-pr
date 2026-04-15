@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from contextpr.enrichment.intent import IntentPrediction
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -61,13 +60,6 @@ class SonarAnalysisClient(Protocol):
         """Return Sonar issues for the pull request."""
 
 
-class IntentClassificationClient(Protocol):
-    """Minimal intent classifier contract needed by the analysis service."""
-
-    def predict(self, issue: SonarIssue) -> IntentPrediction | None:
-        """Return a predicted intent label for an issue."""
-
-
 class AnalysisService:
     """Coordinate the MVP workflow from Sonar issues to GitHub PR comments."""
 
@@ -75,12 +67,10 @@ class AnalysisService:
         self,
         github_client: GitHubAnalysisClient,
         sonar_client: SonarAnalysisClient,
-        intent_classifier: IntentClassificationClient | None = None,
     ) -> None:
         """Store the clients needed for analysis."""
         self._github_client = github_client
         self._sonar_client = sonar_client
-        self._intent_classifier = intent_classifier
 
     def analyze_pull_request(
         self,
@@ -102,11 +92,6 @@ class AnalysisService:
                 comment := self._issue_to_comment(
                     issue,
                     changed_lines=changed_lines_by_file.get(issue.location.path, set()),
-                    prediction=(
-                        self._intent_classifier.predict(issue)
-                        if self._intent_classifier is not None
-                        else None
-                    ),
                 )
             )
             is not None
@@ -132,7 +117,6 @@ class AnalysisService:
     def _issue_to_comment(
         issue: SonarIssue,
         changed_lines: set[int],
-        prediction: IntentPrediction | None,
     ) -> GitHubReviewComment | None:
         """Convert a Sonar issue into a GitHub inline review comment if possible."""
         line = issue.location.line
@@ -142,38 +126,17 @@ class AnalysisService:
         return GitHubReviewComment(
             path=issue.location.path,
             line=line,
-            body=AnalysisService._build_comment_body(issue, prediction),
+            body=AnalysisService._build_comment_body(issue),
         )
 
     @staticmethod
-    def _build_comment_body(
-        issue: SonarIssue,
-        prediction: IntentPrediction | None,
-    ) -> str:
+    def _build_comment_body(issue: SonarIssue) -> str:
         """Render a minimal MVP comment body from a Sonar issue."""
-        prediction_block = ""
-        if prediction is not None:
-            prediction_block = (
-                "\n\n"
-                f"Predicted change intent: `{prediction.label}`"
-                f"{AnalysisService._format_confidence(prediction)}."
-            )
-
         return (
             f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):\n\n"
             f"{issue.message}\n\n"
-            f"Issue type: `{issue.issue_type or 'UNKNOWN'}`."
-            f"{prediction_block}\n\n"
             f"{COMMENT_MARKER_PREFIX}{issue.key} -->"
         )
-
-    @staticmethod
-    def _format_confidence(prediction: IntentPrediction) -> str:
-        """Render the prediction confidence if available."""
-        if prediction.confidence is None:
-            return ""
-
-        return f" (confidence `{prediction.confidence:.0%}`)"
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         """Delete previous ContextPR comments so each run leaves a clean PR state."""

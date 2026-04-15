@@ -1,6 +1,5 @@
 """Tests for the analysis orchestration service."""
 
-from contextpr.enrichment.intent import IntentPrediction
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -94,21 +93,12 @@ class FakeSonarClient:
         ]
 
 
-class FakeIntentClassifier:
-    """Simple fake classifier for intent enrichment tests."""
-
-    def predict(self, issue: SonarIssue) -> IntentPrediction:
-        """Return a deterministic predicted intent."""
-        return IntentPrediction(label="refactor", confidence=0.82)
-
-
 def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     """Only Sonar issues with path and line in the PR should be posted."""
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
-        intent_classifier=FakeIntentClassifier(),
     )
 
     result = service.analyze_pull_request(
@@ -124,7 +114,6 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
-    assert "Predicted change intent: `refactor`" in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -134,7 +123,6 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
-        intent_classifier=FakeIntentClassifier(),
     )
 
     result = service.analyze_pull_request(

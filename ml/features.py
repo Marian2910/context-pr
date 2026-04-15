@@ -71,7 +71,7 @@ class MultiLabelBinarizerTransformer(BaseEstimator, TransformerMixin):
     def fit(
         self,
         x: pd.DataFrame | pd.Series | np.ndarray,
-        y: object = None,
+        _y: object = None,
     ) -> MultiLabelBinarizerTransformer:
         """Fit the binarizer on iterable tag values."""
         self._binarizer.fit(_normalize_tag_rows(x))
@@ -85,7 +85,7 @@ class MultiLabelBinarizerTransformer(BaseEstimator, TransformerMixin):
         """Transform iterable tag values into a binary feature matrix."""
         return self._binarizer.transform(_normalize_tag_rows(x))
 
-    def get_feature_names_out(self, input_features: object = None) -> np.ndarray:
+    def get_feature_names_out(self, _input_features: object = None) -> np.ndarray:
         """Return output feature names."""
         return np.asarray([f"tag__{label}" for label in self.classes_], dtype=object)
 

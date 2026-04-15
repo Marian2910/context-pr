@@ -80,7 +80,7 @@ def _parse_serialized_value(value: str) -> object:
     for parser in (json.loads, ast.literal_eval):
         try:
             return parser(value)
-        except (json.JSONDecodeError, SyntaxError, ValueError):
+        except (SyntaxError, ValueError):
             continue
 
     return value

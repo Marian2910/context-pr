@@ -37,10 +37,6 @@ class SonarIssue:
     severity: str
     message: str
     location: IssueLocation
-    issue_type: str = ""
-    tags: tuple[str, ...] = ()
-    clean_code_attribute: str = ""
-    clean_code_attribute_category: str = ""
 
 
 @dataclass(frozen=True, slots=True)

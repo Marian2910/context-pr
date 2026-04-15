@@ -38,10 +38,6 @@ class SonarQubeClient:
             if (issue := self._map_issue(raw_issue)) is not None
         ]
 
-    def fetch_quality_gate_status(self, pull_request_number: int) -> str:
-        """Fetch the quality gate status for a pull request analysis."""
-        raise NotImplementedError("SonarQube quality gate retrieval is not implemented yet.")
-
     def _build_issues_request(self, pull_request_number: int) -> Request:
         """Build the HTTP request for fetching issues."""
         params = urlencode(
@@ -88,7 +84,7 @@ class SonarQubeClient:
             return None
 
         path = component.split(":", maxsplit=1)[1]
-        issue_key, rule, severity, message, line, issue_type = fields
+        issue_key, rule, severity, message, line = fields
 
         return SonarIssue(
             key=issue_key,
@@ -96,30 +92,19 @@ class SonarQubeClient:
             severity=severity,
             message=message,
             location=IssueLocation(path=path, line=line),
-            issue_type=issue_type,
-            tags=SonarQubeClient._extract_tags(payload),
-            clean_code_attribute=SonarQubeClient._extract_string(payload, "cleanCodeAttribute"),
-            clean_code_attribute_category=SonarQubeClient._extract_string(
-                payload,
-                "cleanCodeAttributeCategory",
-            ),
         )
 
     @staticmethod
     def _extract_issue_fields(
         payload: Mapping[str, object],
-    ) -> tuple[str, str, str, str, int | None, str] | None:
+    ) -> tuple[str, str, str, str, int | None] | None:
         """Extract and validate issue fields."""
         issue_key = payload.get("key")
         rule = payload.get("rule")
         severity = payload.get("severity")
         message = payload.get("message")
-        issue_type = payload.get("type")
 
-        if not all(
-            isinstance(value, str)
-            for value in (issue_key, rule, severity, message, issue_type)
-        ):
+        if not all(isinstance(value, str) for value in (issue_key, rule, severity, message)):
             return None
 
         return (
@@ -128,26 +113,7 @@ class SonarQubeClient:
             cast(str, severity),
             cast(str, message),
             SonarQubeClient._extract_line(payload),
-            cast(str, issue_type),
         )
-
-    @staticmethod
-    def _extract_tags(payload: Mapping[str, object]) -> tuple[str, ...]:
-        """Extract issue tags from the Sonar payload."""
-        tags = payload.get("tags")
-        if not isinstance(tags, list):
-            return ()
-
-        return tuple(str(tag) for tag in tags if isinstance(tag, str))
-
-    @staticmethod
-    def _extract_string(payload: Mapping[str, object], key: str) -> str:
-        """Extract a string field from the payload or return an empty value."""
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-
-        return ""
 
     @staticmethod
     def _extract_line(payload: Mapping[str, object]) -> int | None:
