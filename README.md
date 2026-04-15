@@ -112,15 +112,15 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           github-repository: ${{ github.repository }}
           dry-run: "true"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 ```
 
 The Action wraps `contextpr analyze`. As the Python implementation grows, the GitHub Action
 automatically benefits from the same logic because it simply delegates to the packaged CLI.
 
-To let the GitHub Action authenticate as a bot identity, configure your repository or
-organization secrets for the GitHub App and map them to the environment variables expected by
-ContextPR. The visible author of review comments will then be the GitHub App bot account
-instead of a personal user.
+For GitHub access, the Action uses the workflow token (`github.token`). Consumers only need
+to configure Sonar credentials. Review comments will appear from `github-actions[bot]`.
 
 ## Development workflow
 

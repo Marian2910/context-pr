@@ -25,6 +25,7 @@ class ConfigurationError(ValueError):
 class Settings:
     """Application settings loaded from environment variables."""
 
+    github_token: str | None = None
     github_app_id: str | None = None
     github_installation_id: str | None = None
     github_private_key: str | None = None
@@ -41,6 +42,10 @@ class Settings:
         """Build settings from a mapping of environment variables."""
         env = os.environ if environ is None else environ
         return cls(
+            github_token=(
+                _read_optional(env, "CONTEXTPR_GITHUB_TOKEN")
+                or _read_optional(env, "GITHUB_TOKEN")
+            ),
             github_app_id=_read_optional(env, "CONTEXTPR_GITHUB_APP_ID"),
             github_installation_id=_read_optional(env, "CONTEXTPR_GITHUB_INSTALLATION_ID"),
             github_private_key=_read_github_private_key(),
@@ -69,7 +74,12 @@ class Settings:
     @property
     def github_enabled(self) -> bool:
         """Return whether GitHub credentials look usable."""
-        return bool(self.github_app_enabled and self.github_repository)
+        return bool(self.github_auth_mode != "none" and self.github_repository)
+
+    @property
+    def github_token_enabled(self) -> bool:
+        """Return whether token-based GitHub authentication is present."""
+        return bool(self.github_token)
 
     @property
     def github_app_enabled(self) -> bool:
@@ -85,6 +95,8 @@ class Settings:
         """Return the configured GitHub authentication mode."""
         if self.github_app_enabled:
             return "app"
+        if self.github_token_enabled:
+            return "token"
 
         return "none"
 

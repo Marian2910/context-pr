@@ -29,6 +29,20 @@ def test_github_auth_uses_installation_token(
     assert auth.get_token() == "installation-token"
 
 
+def test_github_auth_uses_token_when_available() -> None:
+    """Token auth should work without GitHub App credentials."""
+    auth = GitHubAuth(
+        Settings(
+            github_token="workflow-token",
+            github_repository="octo/example",
+        )
+    )
+
+    assert auth.auth_mode == "token"
+    assert auth.get_token() == "workflow-token"
+    assert auth.get_actor_login() == "github-actions[bot]"
+
+
 def test_github_auth_requires_app_credentials() -> None:
     """GitHub auth should fail when app credentials are missing."""
     auth = GitHubAuth(Settings(github_repository="octo/example"))
