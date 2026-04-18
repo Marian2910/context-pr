@@ -4,7 +4,7 @@ author: "ContextPR Contributors"
 
 inputs:
   github-token:
-    description: "GitHub token used for pull request comment operations."
+    description: "GitHub token used for pull request comment operations. Defaults to github.token."
     required: false
   github-api-url:
     description: "Base GitHub API URL."
@@ -15,7 +15,7 @@ inputs:
     required: false
   sonar-token:
     description: "SonarQube or SonarCloud token."
-    required: false
+    required: true
   sonar-host-url:
     description: "Base SonarQube or SonarCloud URL."
     required: false
@@ -25,10 +25,10 @@ inputs:
     required: false
   sonar-project-key:
     description: "Sonar project key."
-    required: false
+    required: true
   pr-number:
     description: "Pull request number to analyze."
-    required: false
+    required: true
   dry-run:
     description: "Whether to avoid posting changes and only preview the flow."
     required: false

@@ -66,10 +66,13 @@ def analyze(
 ) -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
+    if settings.github_auth_mode == "none":
+        raise typer.BadParameter(
+            "GitHub authentication is required. Configure CONTEXTPR_GITHUB_TOKEN "
+            "or GitHub App credentials."
+        )
+
     settings.require(
-        "github_app_id",
-        "github_installation_id",
-        "github_private_key",
         "github_repository",
         "sonar_token",
         "sonar_project_key",

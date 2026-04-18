@@ -96,9 +96,8 @@ class GitHubAuth:
     def require_configured(self) -> None:
         if self.auth_mode != "app":
             raise ConfigurationError(
-                "Missing GitHub App authentication. Configure "
-                "CONTEXTPR_GITHUB_APP_ID, CONTEXTPR_GITHUB_INSTALLATION_ID, "
-                "and secrets/GITHUB_APP_PRIVATE_KEY.pem."
+                "Missing GitHub authentication. Configure CONTEXTPR_GITHUB_TOKEN "
+                "or GitHub App credentials."
             )
 
         self._settings.require(
@@ -109,6 +108,10 @@ class GitHubAuth:
 
     def get_token(self) -> str | None:
         self.require_configured()
+        if self.auth_mode == "token":
+            logger.info("Using GitHub token authentication.")
+            return self._settings.github_token
+
         if self._installation_token is None:
             logger.info("Using GitHub App authentication.")
             self._installation_token = create_installation_token(
@@ -122,6 +125,9 @@ class GitHubAuth:
 
     def get_actor_login(self) -> str:
         self.require_configured()
+        if self.auth_mode == "token":
+            return "github-actions[bot]"
+
         if self._app_slug is None:
             self._app_slug = get_app_slug(
                 api_url=self._settings.github_api_url,

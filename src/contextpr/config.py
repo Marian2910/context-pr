@@ -26,6 +26,7 @@ class ConfigurationError(ValueError):
 @dataclass(frozen=True, slots=True)
 class Settings:
 
+    github_token: str | None = None
     github_app_id: str | None = None
     github_installation_id: str | None = None
     github_private_key: str | None = None
@@ -43,6 +44,10 @@ class Settings:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Self:
         env = os.environ if environ is None else environ
         return cls(
+            github_token=(
+                _read_optional(env, "CONTEXTPR_GITHUB_TOKEN")
+                or _read_optional(env, "GITHUB_TOKEN")
+            ),
             github_app_id=_read_optional(env, "CONTEXTPR_GITHUB_APP_ID"),
             github_installation_id=_read_optional(env, "CONTEXTPR_GITHUB_INSTALLATION_ID"),
             github_private_key=_read_github_private_key(),
@@ -94,6 +99,8 @@ class Settings:
     def github_auth_mode(self) -> str:
         if self.github_app_enabled:
             return "app"
+        if self.github_token_enabled:
+            return "token"
 
         return "none"
 
