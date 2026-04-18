@@ -95,5 +95,88 @@ def test_issue_enricher_returns_quality_and_history_without_model(tmp_path: Path
 
     assert enrichment is not None
     assert enrichment.intent_prediction is None
-    assert enrichment.quality_context == "CLEAR / INTENTIONAL"
     assert enrichment.historical_context is not None
+    assert (
+        enrichment.guidance.summary
+        == "Sonar flagged this because a local variable appears to be unused."
+    )
+    assert "remove the variable or replace it with `_`" in enrichment.guidance.next_step
+
+
+def test_issue_enricher_produces_plain_language_for_duplicate_condition(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Remove this if statement or edit its code blocks so that "
+                    "they're not all the same.\","
+                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
+                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,docs,2024-01-01"
+                ),
+                (
+                    "\"Remove this if statement or edit its code blocks so that "
+                    "they're not all the same.\","
+                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
+                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,test,2024-01-02"
+                ),
+                (
+                    "\"Remove this if statement or edit its code blocks so that "
+                    "they're not all the same.\","
+                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
+                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,refactor,2024-01-03"
+                ),
+                (
+                    "\"Remove this if statement or edit its code blocks so that "
+                    "they're not all the same.\","
+                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
+                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,docs,2024-01-04"
+                ),
+                (
+                    "\"Remove this if statement or edit its code blocks so that "
+                    "they're not all the same.\","
+                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
+                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,docs,2024-01-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enricher = IssueEnricher(
+        model_path=tmp_path / "missing.joblib",
+        dataset_path=dataset_path,
+    )
+    enrichment = enricher.enrich(
+        SonarIssue(
+            key="issue-3",
+            rule="python:S3923",
+            severity="MAJOR",
+            message=(
+                "Remove this if statement or edit its code blocks so that they're "
+                "not all the same."
+            ),
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+            clean_code_attribute="CLEAR",
+            clean_code_attribute_category="INTENTIONAL",
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.guidance.summary == (
+        "Sonar flagged this because all branches of the condition appear to do the same thing."
+    )
+    assert enrichment.guidance.explanation == (
+        "This looks like a cleanup issue rather than a functional change."
+    )
+    assert "simplify the condition or remove duplicated branches" in enrichment.guidance.next_step
+    assert enrichment.guidance.evidence_note == (
+        "Similar cases were usually resolved with cleanup around the flagged code."
+    )

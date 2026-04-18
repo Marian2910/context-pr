@@ -141,42 +141,22 @@ class AnalysisService:
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
     ) -> str:
-        sections = [
-            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
-            issue.message,
-        ]
+        sections = [issue.message]
         if enrichment is not None:
-            for block in AnalysisService._enrichment_blocks(enrichment):
-                sections.append(block)
+            sections = AnalysisService._enrichment_blocks(enrichment)
 
         sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
         return "\n\n".join(sections)
 
     @staticmethod
     def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
-        blocks: list[str] = []
-        if enrichment.quality_context:
-            blocks.append(f"Quality context: `{enrichment.quality_context}`.")
-        if enrichment.intent_prediction is not None:
-            confidence = ""
-            if enrichment.intent_prediction.confidence is not None:
-                confidence = f" ({enrichment.intent_prediction.confidence:.0%} confidence)"
-            blocks.append(
-                "Likely remediation intent: "
-                f"`{enrichment.intent_prediction.label}`{confidence}."
-            )
-        if enrichment.historical_context is not None:
-            distribution = ", ".join(
-                f"`{label}` x{count}"
-                for label, count in enrichment.historical_context.label_distribution
-            )
-            blocks.append(
-                "Historical pattern: "
-                f"{enrichment.historical_context.sample_size} similar issues, "
-                f"{enrichment.historical_context.same_rule_matches} with the same rule; "
-                f"top outcomes: {distribution}."
-            )
-
+        blocks = [
+            enrichment.guidance.summary,
+            enrichment.guidance.explanation,
+            enrichment.guidance.next_step,
+        ]
+        if enrichment.guidance.evidence_note is not None:
+            blocks.append(enrichment.guidance.evidence_note)
         return blocks
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:

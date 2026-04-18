@@ -1,4 +1,9 @@
-from contextpr.enrichment import HistoricalContext, IntentPrediction, IssueEnrichment
+from contextpr.enrichment import (
+    DeveloperGuidance,
+    HistoricalContext,
+    IntentPrediction,
+    IssueEnrichment,
+)
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -87,9 +92,22 @@ class FakeSonarClient:
 class FakeIssueEnricher:
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
-        """Return a stable enrichment payload."""
         return IssueEnrichment(
-            quality_context="CLEAR / INTENTIONAL",
+            guidance=DeveloperGuidance(
+                summary=(
+                    "Sonar flagged this because all branches of the condition appear "
+                    "to do the same thing."
+                ),
+                explanation="This looks like a cleanup issue rather than a functional change.",
+                next_step=(
+                    "A good next step is to simplify the condition or remove duplicated "
+                    "branches if they are truly equivalent."
+                ),
+                evidence_note=(
+                    "Similar cases were usually resolved with cleanup around the "
+                    "flagged code."
+                ),
+            ),
             intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
             historical_context=HistoricalContext(
                 sample_size=6,
@@ -120,8 +138,17 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
-    assert "Likely remediation intent: `refactor` (82% confidence)." in comments[0].body
-    assert "Historical pattern: 6 similar issues" in comments[0].body
+    assert (
+        "This looks like a cleanup issue rather than a functional change."
+        in comments[0].body
+    )
+    assert (
+        "Similar cases were usually resolved with cleanup around the flagged code."
+        in comments[0].body
+    )
+    assert "First issue" not in comments[0].body
+    assert "Likely remediation intent" not in comments[0].body
+    assert "Historical pattern:" not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
