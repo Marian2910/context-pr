@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 class GitHubClient:
 
     def __init__(self, settings: Settings) -> None:
-        """Initialize the client with application settings."""
         self._settings = settings
         self._auth = GitHubAuth(settings)
         if self._settings.github_repository and self._auth.auth_mode != "none":

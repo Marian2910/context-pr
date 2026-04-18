@@ -29,7 +29,7 @@ class AnalysisResult:
 class GitHubAnalysisClient(Protocol):
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        """Return the list of files changed in the pull request."""
+        ...
 
     def create_review(
         self,
@@ -37,31 +37,30 @@ class GitHubAnalysisClient(Protocol):
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        """Create a pull request review with inline comments."""
+        ...
 
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        """Return existing inline review comments."""
+        ...
 
     def delete_review_comment(self, comment_id: int) -> None:
-        """Delete an existing review comment."""
+        ...
 
     def get_authenticated_user_login(self) -> str:
-        """Return the login of the configured GitHub identity."""
+        ...
 
 
 class SonarAnalysisClient(Protocol):
-    """Minimal Sonar client contract needed by the analysis service."""
 
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        """Return Sonar issues for the pull request."""
+        ...
 
 class IssueEnrichmentClient(Protocol):
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
-        """Return Sonar issues for the pull request."""
+        ...
 
 class AnalysisService:
 
