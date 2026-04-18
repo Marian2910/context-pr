@@ -9,7 +9,6 @@ RANDOM_STATE = 42
 
 
 def build_model() -> Pipeline:
-    """Build the complete feature + classifier pipeline."""
     return Pipeline(
         memory=None,
         steps=[

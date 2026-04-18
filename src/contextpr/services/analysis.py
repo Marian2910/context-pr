@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from contextpr.enrichment import IssueEnrichment
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -16,7 +17,6 @@ COMMENT_MARKER_PREFIX = "<!-- contextpr:issue="
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
-    """Summarize the result of an analysis run."""
 
     pull_request: PullRequestRef
     fetched_issues: int
@@ -27,7 +27,6 @@ class AnalysisResult:
 
 
 class GitHubAnalysisClient(Protocol):
-    """Minimal GitHub client contract needed by the analysis service."""
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
         """Return the list of files changed in the pull request."""
@@ -59,18 +58,22 @@ class SonarAnalysisClient(Protocol):
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
         """Return Sonar issues for the pull request."""
 
+class IssueEnrichmentClient(Protocol):
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
+        """Return Sonar issues for the pull request."""
 
 class AnalysisService:
-    """Coordinate the MVP workflow from Sonar issues to GitHub PR comments."""
 
     def __init__(
         self,
         github_client: GitHubAnalysisClient,
         sonar_client: SonarAnalysisClient,
+        issue_enricher: IssueEnrichmentClient | None = None,
     ) -> None:
-        """Store the clients needed for analysis."""
         self._github_client = github_client
         self._sonar_client = sonar_client
+        self._issue_enricher = issue_enricher
 
     def analyze_pull_request(
         self,
@@ -78,7 +81,6 @@ class AnalysisService:
         pull_request: PullRequestRef,
         dry_run: bool,
     ) -> AnalysisResult:
-        """Fetch Sonar issues and optionally publish them as PR review comments."""
         pull_request_files = self._github_client.get_pull_request_files(pull_request)
         changed_lines_by_file = {
             pr_file.path: self._extract_added_lines(pr_file.patch)
@@ -92,6 +94,11 @@ class AnalysisService:
                 comment := self._issue_to_comment(
                     issue,
                     changed_lines=changed_lines_by_file.get(issue.location.path, set()),
+                    enrichment=(
+                        self._issue_enricher.enrich(issue)
+                        if self._issue_enricher is not None
+                        else None
+                    ),
                 )
             )
             is not None
@@ -117,8 +124,8 @@ class AnalysisService:
     def _issue_to_comment(
         issue: SonarIssue,
         changed_lines: set[int],
+        enrichment: IssueEnrichment | None,
     ) -> GitHubReviewComment | None:
-        """Convert a Sonar issue into a GitHub inline review comment if possible."""
         line = issue.location.line
         if line is None or line not in changed_lines:
             return None
@@ -126,20 +133,53 @@ class AnalysisService:
         return GitHubReviewComment(
             path=issue.location.path,
             line=line,
-            body=AnalysisService._build_comment_body(issue),
+            body=AnalysisService._build_comment_body(issue, enrichment),
         )
 
     @staticmethod
-    def _build_comment_body(issue: SonarIssue) -> str:
-        """Render a minimal MVP comment body from a Sonar issue."""
-        return (
-            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):\n\n"
-            f"{issue.message}\n\n"
-            f"{COMMENT_MARKER_PREFIX}{issue.key} -->"
-        )
+    def _build_comment_body(
+        issue: SonarIssue,
+        enrichment: IssueEnrichment | None,
+    ) -> str:
+        sections = [
+            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
+            issue.message,
+        ]
+        if enrichment is not None:
+            for block in AnalysisService._enrichment_blocks(enrichment):
+                sections.append(block)
+
+        sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
+        blocks: list[str] = []
+        if enrichment.quality_context:
+            blocks.append(f"Quality context: `{enrichment.quality_context}`.")
+        if enrichment.intent_prediction is not None:
+            confidence = ""
+            if enrichment.intent_prediction.confidence is not None:
+                confidence = f" ({enrichment.intent_prediction.confidence:.0%} confidence)"
+            blocks.append(
+                "Likely remediation intent: "
+                f"`{enrichment.intent_prediction.label}`{confidence}."
+            )
+        if enrichment.historical_context is not None:
+            distribution = ", ".join(
+                f"`{label}` x{count}"
+                for label, count in enrichment.historical_context.label_distribution
+            )
+            blocks.append(
+                "Historical pattern: "
+                f"{enrichment.historical_context.sample_size} similar issues, "
+                f"{enrichment.historical_context.same_rule_matches} with the same rule; "
+                f"top outcomes: {distribution}."
+            )
+
+        return blocks
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
-        """Delete previous ContextPR comments so each run leaves a clean PR state."""
         author_login = self._github_client.get_authenticated_user_login()
         existing_comments = self._github_client.list_existing_review_comments(pull_request)
         managed_comments = [
@@ -155,7 +195,6 @@ class AnalysisService:
 
     @staticmethod
     def _extract_added_lines(patch: str | None) -> set[int]:
-        """Parse a unified diff patch and return right-side added line numbers."""
         if not patch:
             return set()
 
@@ -189,7 +228,6 @@ class AnalysisService:
 
     @staticmethod
     def _parse_hunk_new_start(header: str) -> int | None:
-        """Extract the new-file start line from a unified diff hunk header."""
         parts = header.split()
         if len(parts) < 3:
             return None

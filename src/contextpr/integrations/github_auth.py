@@ -20,7 +20,6 @@ def create_installation_token(
     installation_id: str,
     private_key: str,
 ) -> str:
-    """Exchange a GitHub App JWT for an installation access token."""
     jwt_token = create_app_jwt(app_id=app_id, private_key=private_key)
     request = Request(
         url=_api_url(
@@ -48,7 +47,6 @@ def create_installation_token(
 
 
 def get_app_slug(*, api_url: str, app_id: str, private_key: str) -> str:
-    """Fetch the GitHub App slug used to derive the bot login."""
     jwt_token = create_app_jwt(app_id=app_id, private_key=private_key)
     request = Request(
         url=_api_url(api_url, "/app"),
@@ -70,7 +68,6 @@ def get_app_slug(*, api_url: str, app_id: str, private_key: str) -> str:
 
 
 def create_app_jwt(*, app_id: str, private_key: str) -> str:
-    """Create a short-lived GitHub App JWT signed with RS256."""
     now = datetime.now(tz=UTC)
     payload = {
         "iat": int((now - timedelta(seconds=60)).timestamp()),
@@ -86,21 +83,17 @@ def create_app_jwt(*, app_id: str, private_key: str) -> str:
 
 
 class GitHubAuth:
-    """Resolve and cache the GitHub token used by API clients."""
 
     def __init__(self, settings: Settings) -> None:
-        """Store settings and prepare the authentication strategy."""
         self._settings = settings
         self._installation_token: str | None = None
         self._app_slug: str | None = None
 
     @property
     def auth_mode(self) -> str:
-        """Return the active GitHub authentication mode."""
         return self._settings.github_auth_mode
 
     def require_configured(self) -> None:
-        """Ensure GitHub App authentication is available."""
         if self.auth_mode != "app":
             raise ConfigurationError(
                 "Missing GitHub App authentication. Configure "
@@ -115,7 +108,6 @@ class GitHubAuth:
         )
 
     def get_token(self) -> str | None:
-        """Return the token that should be used for GitHub API calls."""
         self.require_configured()
         if self._installation_token is None:
             logger.info("Using GitHub App authentication.")
@@ -129,7 +121,6 @@ class GitHubAuth:
         return self._installation_token
 
     def get_actor_login(self) -> str:
-        """Return the visible GitHub login that will author API actions."""
         self.require_configured()
         if self._app_slug is None:
             self._app_slug = get_app_slug(
@@ -142,7 +133,6 @@ class GitHubAuth:
 
 
 def _normalize_private_key(private_key: str) -> str:
-    """Normalize a PEM private key passed through environment variables."""
     normalized = private_key.strip()
     if "\\n" in normalized:
         normalized = normalized.replace("\\n", "\n")
@@ -151,5 +141,4 @@ def _normalize_private_key(private_key: str) -> str:
 
 
 def _api_url(base_url: str, path: str) -> str:
-    """Build a full GitHub API URL from a base URL and relative path."""
     return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))

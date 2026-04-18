@@ -1,12 +1,9 @@
-"""Tests for configuration loading."""
-
 import pytest
 
 from contextpr.config import ConfigurationError, Settings
 
 
 def test_settings_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Environment-backed settings should be mapped into the Settings model."""
     private_key = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
     monkeypatch.setattr(
         "contextpr.config._read_github_private_key",
@@ -33,11 +30,12 @@ def test_settings_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch
     assert settings.github_repository == "octo/example"
     assert settings.github_enabled is True
     assert settings.sonar_enabled is True
+    assert str(settings.intent_model_path) == "artifacts/intent_classifier.joblib"
+    assert str(settings.issue_dataset_path) == "dataset/curated_issues_data.xlsx"
     assert settings.log_level == "DEBUG"
 
 
 def test_require_raises_for_missing_values() -> None:
-    """Missing required settings should raise a dedicated error."""
     settings = Settings.from_env({})
 
     with pytest.raises(ConfigurationError):
@@ -45,7 +43,6 @@ def test_require_raises_for_missing_values() -> None:
 
 
 def test_github_app_settings_enable_github_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GitHub App credentials should enable GitHub authentication."""
     monkeypatch.setattr(
         "contextpr.config._read_github_private_key",
         lambda: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",

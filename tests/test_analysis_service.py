@@ -1,5 +1,4 @@
-"""Tests for the analysis orchestration service."""
-
+from contextpr.enrichment import HistoricalContext, IntentPrediction, IssueEnrichment
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -12,7 +11,6 @@ from contextpr.services import AnalysisService
 
 
 class FakeGitHubClient:
-    """Simple fake GitHub client for service tests."""
 
     def __init__(self) -> None:
         """Initialize the fake client state."""
@@ -20,7 +18,6 @@ class FakeGitHubClient:
         self.deleted_comment_ids: list[int] = []
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        """Return deterministic changed files."""
         return [
             PullRequestFile(
                 path="src/app.py",
@@ -36,14 +33,12 @@ class FakeGitHubClient:
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        """Record created reviews for assertions."""
         self.created_reviews.append((pull_request, comments))
 
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        """Return an existing managed comment to be cleaned up."""
         return [
             ExistingReviewComment(
                 comment_id=99,
@@ -55,19 +50,15 @@ class FakeGitHubClient:
         ]
 
     def delete_review_comment(self, comment_id: int) -> None:
-        """Record deleted review comments for assertions."""
         self.deleted_comment_ids.append(comment_id)
 
     def get_authenticated_user_login(self) -> str:
-        """Return the login used by the fake GitHub identity."""
         return "contextpr-bot"
 
 
 class FakeSonarClient:
-    """Simple fake Sonar client for service tests."""
 
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        """Return a mix of eligible and ineligible issues."""
         return [
             SonarIssue(
                 key="issue-1",
@@ -93,12 +84,27 @@ class FakeSonarClient:
         ]
 
 
+class FakeIssueEnricher:
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment:
+        """Return a stable enrichment payload."""
+        return IssueEnrichment(
+            quality_context="CLEAR / INTENTIONAL",
+            intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
+            historical_context=HistoricalContext(
+                sample_size=6,
+                label_distribution=(("refactor", 4), ("fix", 2)),
+                same_rule_matches=3,
+            ),
+        )
+
+
 def test_analyze_pull_request_posts_only_eligible_comments() -> None:
-    """Only Sonar issues with path and line in the PR should be posted."""
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
+        issue_enricher=FakeIssueEnricher(),
     )
 
     result = service.analyze_pull_request(
@@ -114,15 +120,17 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
+    assert "Likely remediation intent: `refactor` (82% confidence)." in comments[0].body
+    assert "Historical pattern: 6 similar issues" in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
 def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
-    """Dry runs should not create GitHub reviews."""
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
+        issue_enricher=FakeIssueEnricher(),
     )
 
     result = service.analyze_pull_request(

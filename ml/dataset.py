@@ -21,7 +21,6 @@ REQUIRED_COLUMNS = (
 
 
 def load_dataset(df: pd.DataFrame) -> pd.DataFrame:
-    """Load and normalize a dataset used for intent classification."""
     _validate_columns(df.columns)
 
     normalized = df.copy()
@@ -45,7 +44,6 @@ def load_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_columns(columns: Iterable[object]) -> None:
-    """Validate that the input frame contains the required columns."""
     missing = sorted(set(REQUIRED_COLUMNS) - {str(column) for column in columns})
     if missing:
         formatted = ", ".join(missing)
@@ -53,7 +51,6 @@ def _validate_columns(columns: Iterable[object]) -> None:
 
 
 def _normalize_text(value: object) -> str:
-    """Normalize arbitrary values into stripped strings."""
     if value is None:
         return ""
 

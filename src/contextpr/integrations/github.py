@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
-    """GitHub client for pull request interactions."""
 
     def __init__(self, settings: Settings) -> None:
         """Initialize the client with application settings."""
@@ -29,11 +28,9 @@ class GitHubClient:
             logger.info("Configured GitHub client.", extra={"auth_mode": self._auth.auth_mode})
 
     def is_configured(self) -> bool:
-        """Return whether the client has enough configuration to operate."""
         return self._settings.github_enabled
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        """Fetch the list of changed files for a pull request."""
         self._settings.require("github_repository")
         self._auth.require_configured()
 
@@ -71,7 +68,6 @@ class GitHubClient:
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        """Fetch existing inline review comments for a pull request."""
         self._settings.require("github_repository")
         self._auth.require_configured()
 
@@ -124,7 +120,6 @@ class GitHubClient:
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        """Create a pull request review containing inline comments."""
         self._settings.require("github_repository")
         self._auth.require_configured()
 
@@ -153,7 +148,6 @@ class GitHubClient:
             return None
 
     def delete_review_comment(self, comment_id: int) -> None:
-        """Delete an existing pull request review comment."""
         self._settings.require("github_repository")
         self._auth.require_configured()
 
@@ -167,18 +161,15 @@ class GitHubClient:
             return None
 
     def get_authenticated_user_login(self) -> str:
-        """Return the visible login associated with the configured GitHub identity."""
         self._settings.require("github_repository")
         self._auth.require_configured()
         return self._auth.get_actor_login()
 
     def _api_url(self, path: str) -> str:
-        """Build a full GitHub API URL from a relative path."""
         base_url = self._settings.github_api_url.rstrip("/") + "/"
         return urljoin(base_url, path.lstrip("/"))
 
     def _headers(self) -> dict[str, str]:
-        """Build standard GitHub REST API headers."""
         token = self._auth.get_token()
         return {
             "Accept": "application/vnd.github+json",

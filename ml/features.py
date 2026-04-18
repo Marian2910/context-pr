@@ -20,7 +20,6 @@ CATEGORICAL_COLUMNS = [
 
 
 def build_feature_pipeline() -> ColumnTransformer:
-    """Build the full sklearn feature pipeline."""
     text_pipeline = Pipeline(
         steps=[
             (
@@ -62,10 +61,8 @@ def build_feature_pipeline() -> ColumnTransformer:
 
 
 class MultiLabelBinarizerTransformer(BaseEstimator, TransformerMixin):
-    """Wrap ``MultiLabelBinarizer`` for sklearn pipeline use."""
 
     def __init__(self) -> None:
-        """Initialize the underlying multi-label binarizer."""
         self._binarizer = MultiLabelBinarizer()
 
     def fit(
@@ -73,7 +70,6 @@ class MultiLabelBinarizerTransformer(BaseEstimator, TransformerMixin):
         x: pd.DataFrame | pd.Series | np.ndarray,
         _y: object = None,
     ) -> MultiLabelBinarizerTransformer:
-        """Fit the binarizer on iterable tag values."""
         self._binarizer.fit(_normalize_tag_rows(x))
         self.classes_ = self._binarizer.classes_
         return self
@@ -82,16 +78,13 @@ class MultiLabelBinarizerTransformer(BaseEstimator, TransformerMixin):
         self,
         x: pd.DataFrame | pd.Series | np.ndarray,
     ) -> np.ndarray:
-        """Transform iterable tag values into a binary feature matrix."""
         return self._binarizer.transform(_normalize_tag_rows(x))
 
     def get_feature_names_out(self, _input_features: object = None) -> np.ndarray:
-        """Return output feature names."""
         return np.asarray([f"tag__{label}" for label in self.classes_], dtype=object)
 
 
 def _combine_text_columns(frame: pd.DataFrame) -> np.ndarray:
-    """Combine message and rule fields into a single text field."""
     combined = (
         frame["message"].fillna("").astype(str).str.strip()
         + " [RULE] "
@@ -101,14 +94,12 @@ def _combine_text_columns(frame: pd.DataFrame) -> np.ndarray:
 
 
 def _select_tags_column(frame: pd.DataFrame) -> np.ndarray:
-    """Select the tags column from a single-column frame."""
     return frame.iloc[:, 0].to_numpy()
 
 
 def _normalize_tag_rows(
     values: pd.DataFrame | pd.Series | np.ndarray,
 ) -> list[list[str]]:
-    """Normalize pipeline input values for multi-label binarization."""
     if isinstance(values, pd.DataFrame):
         raw_rows = values.iloc[:, 0].tolist()
     elif isinstance(values, pd.Series):

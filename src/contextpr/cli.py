@@ -7,6 +7,7 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
+from contextpr.enrichment import IssueEnricher
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 def version_callback(value: bool | None) -> None:
-    """Print the installed package version and exit."""
     if value:
         typer.echo(f"ContextPR {__version__}")
         raise typer.Exit()
@@ -64,7 +64,6 @@ def analyze(
         ),
     ] = True,
 ) -> None:
-    """Run the MVP analysis pipeline."""
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     settings.require(
@@ -86,6 +85,10 @@ def analyze(
     service = AnalysisService(
         github_client=GitHubClient(settings),
         sonar_client=SonarQubeClient(settings),
+        issue_enricher=IssueEnricher(
+            model_path=settings.intent_model_path,
+            dataset_path=settings.issue_dataset_path,
+        ),
     )
 
     logger.info(
@@ -103,5 +106,4 @@ def analyze(
 
 
 def run() -> None:
-    """Execute the ContextPR CLI application."""
     app()
