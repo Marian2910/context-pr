@@ -14,6 +14,20 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
+EXPLANATION_OPTIONS = (
+    "This looks like a cleanup issue rather than a functional change.",
+    "This seems more like code cleanup than a behavior fix.",
+    "This warning points more toward simplification than a change in behavior.",
+    "This looks like something to clean up rather than a functional defect.",
+)
+
+EVIDENCE_OPTIONS = (
+    "Similar cases were usually resolved with cleanup around the flagged code.",
+    "In similar cases, developers usually handled this as a cleanup task.",
+    "Historically, issues like this were more often addressed by simplifying nearby code.",
+    "Looking at similar cases, this was usually handled as cleanup rather than a larger change.",
+)
+
 
 class FakeGitHubClient:
 
@@ -138,15 +152,10 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
-    assert (
-        "This looks like a cleanup issue rather than a functional change."
-        in comments[0].body
-    )
-    assert (
-        "Similar cases were usually resolved with cleanup around the flagged code."
-        in comments[0].body
-    )
-    assert "First issue" not in comments[0].body
+    assert "Sonar reported a `MAJOR` issue (`python:S100`):" in comments[0].body
+    assert "First issue" in comments[0].body
+    assert any(option in comments[0].body for option in EXPLANATION_OPTIONS)
+    assert any(option in comments[0].body for option in EVIDENCE_OPTIONS)
     assert "Likely remediation intent" not in comments[0].body
     assert "Historical pattern:" not in comments[0].body
     assert github_client.deleted_comment_ids == [99]

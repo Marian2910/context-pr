@@ -3,6 +3,53 @@ from pathlib import Path
 from contextpr.enrichment import IssueEnricher, IssueHistoryRetriever
 from contextpr.models import IssueLocation, SonarIssue
 
+SUMMARY_OPTIONS = (
+    "Sonar flagged this because all branches of the condition appear to do the same thing.",
+)
+
+EXPLANATION_OPTIONS = (
+    "This looks like a cleanup issue rather than a functional change.",
+    "This seems more like code cleanup than a behavior fix.",
+    "This warning points more toward simplification than a change in behavior.",
+    "This looks like something to clean up rather than a functional defect.",
+)
+
+NEXT_STEP_OPTIONS = (
+    (
+        "A good next step is to simplify the condition or remove duplicated "
+        "branches if they are truly equivalent."
+    ),
+    "Consider collapsing the conditional if all branches are effectively doing the same work.",
+    (
+        "Try simplifying the control flow so each branch has a distinct outcome, "
+        "or remove the condition entirely."
+    ),
+    (
+        "A useful next step is to rewrite or remove the conditional so it no "
+        "longer repeats the same behavior."
+    ),
+)
+
+EVIDENCE_OPTIONS = (
+    "Similar cases were usually resolved with cleanup around the flagged code.",
+    "In similar cases, developers usually handled this as a cleanup task.",
+    "Historically, issues like this were more often addressed by simplifying nearby code.",
+    "Looking at similar cases, this was usually handled as cleanup rather than a larger change.",
+)
+
+UNUSED_VARIABLE_NEXT_STEP_OPTIONS = (
+    "A good next step is to remove the variable or replace it with `_` if it is intentional.",
+    "Consider deleting the variable, or rename it to `_` if it is intentionally unused.",
+    (
+        "A useful next step is to remove the unused variable unless it is there "
+        "only as an intentional placeholder."
+    ),
+    (
+        "Try removing the variable, or make the intent explicit with `_` if it "
+        "must remain unused."
+    ),
+)
+
 
 def test_history_retriever_summarizes_similar_issues(tmp_path: Path) -> None:
     dataset_path = tmp_path / "issues.csv"
@@ -100,7 +147,7 @@ def test_issue_enricher_returns_quality_and_history_without_model(tmp_path: Path
         enrichment.guidance.summary
         == "Sonar flagged this because a local variable appears to be unused."
     )
-    assert "remove the variable or replace it with `_`" in enrichment.guidance.next_step
+    assert enrichment.guidance.next_step in UNUSED_VARIABLE_NEXT_STEP_OPTIONS
 
 
 def test_issue_enricher_produces_plain_language_for_duplicate_condition(tmp_path: Path) -> None:
@@ -173,10 +220,7 @@ def test_issue_enricher_produces_plain_language_for_duplicate_condition(tmp_path
     assert enrichment.guidance.summary == (
         "Sonar flagged this because all branches of the condition appear to do the same thing."
     )
-    assert enrichment.guidance.explanation == (
-        "This looks like a cleanup issue rather than a functional change."
-    )
-    assert "simplify the condition or remove duplicated branches" in enrichment.guidance.next_step
-    assert enrichment.guidance.evidence_note == (
-        "Similar cases were usually resolved with cleanup around the flagged code."
-    )
+    assert enrichment.guidance.summary in SUMMARY_OPTIONS
+    assert enrichment.guidance.explanation in EXPLANATION_OPTIONS
+    assert enrichment.guidance.next_step in NEXT_STEP_OPTIONS
+    assert enrichment.guidance.evidence_note in EVIDENCE_OPTIONS

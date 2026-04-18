@@ -66,22 +66,22 @@ class IssueEnricher:
         message = issue.message.lower()
         if issue.rule == "python:S3923" or "not all the same" in message:
             return (
-                "Sonar flagged this because all branches of the condition appear "
-                "to do the same thing."
+                "Sonar flagged this because all branches of the condition appear to "
+                "do the same thing."
             )
         if "unused function parameter" in message:
-            return "Sonar flagged this because one of the function parameters appears to be unused."
+            return "Sonar flagged this because a function parameter appears to be unused."
         if "unused local variable" in message:
             return "Sonar flagged this because a local variable appears to be unused."
         if "duplicating this literal" in message:
             return "Sonar flagged this because the same literal is repeated in multiple places."
         if "function is empty" in message or issue.rule == "python:S1186":
-            return "Sonar flagged this because the function body is empty without clear intent."
+            return "Sonar flagged this because a function body appears to be empty."
         if issue.issue_type == "BUG":
             return "Sonar flagged this because the code may not behave as intended."
         if issue.issue_type == "CODE_SMELL":
-            return "Sonar flagged this because the code can likely be simplified or clarified."
-        return f"Sonar flagged this and suggests the code should be reviewed: {issue.message}"
+            return "Sonar flagged this because the code could be simplified or clarified."
+        return "Sonar flagged this code for review."
 
     def _build_explanation(
         self,
@@ -91,44 +91,191 @@ class IssueEnricher:
     ) -> str:
         issue_kind = self._issue_kind(issue)
         change_kind = self._change_kind(intent_prediction, historical_context, issue_kind)
+        variant = self._variant_index(issue, "explanation")
         if change_kind == "behavior":
-            return "This looks more like a behavior issue than a simple cleanup."
-        if change_kind == "supporting":
-            return (
-                "This looks like a small follow-up around the flagged code rather than a large "
-                "logic change."
+            options = (
+                "This looks more like a behavior issue than a simple cleanup.",
+                (
+                    "This warning suggests the code may need a logic change, not just "
+                    "a tidy-up."
+                ),
+                "This reads more like a correctness concern than a stylistic cleanup.",
+                (
+                    "This is probably worth treating as logic-related work rather than "
+                    "routine cleanup."
+                ),
             )
+            return options[variant]
+        if change_kind == "supporting":
+            options = (
+                (
+                    "This looks like a small follow-up around the flagged code rather "
+                    "than a large logic change."
+                ),
+                (
+                    "This seems more like supporting work around the flagged code than "
+                    "a direct behavior change."
+                ),
+                (
+                    "This warning usually leads to a light follow-up rather than a "
+                    "deeper logic rewrite."
+                ),
+                (
+                    "This looks like a nearby follow-up task more than a core behavior "
+                    "fix."
+                ),
+            )
+            return options[variant]
         if issue_kind == "correctness":
-            return "This is worth checking carefully because it may affect behavior."
-        return "This looks like a cleanup issue rather than a functional change."
+            options = (
+                "This is worth checking carefully because it may affect behavior.",
+                (
+                    "This deserves a closer look because it could change how the code "
+                    "behaves."
+                ),
+                (
+                    "This warning is worth reviewing carefully in case it affects "
+                    "runtime behavior."
+                ),
+                (
+                    "This is the kind of issue that is worth validating against the "
+                    "intended behavior."
+                ),
+            )
+            return options[variant]
+        options = (
+            "This looks like a cleanup issue rather than a functional change.",
+            "This seems more like code cleanup than a behavior fix.",
+            "This warning points more toward simplification than a change in behavior.",
+            "This looks like something to clean up rather than a functional defect.",
+        )
+        return options[variant]
 
     def _build_next_step(self, issue: SonarIssue) -> str:
         message = issue.message.lower()
+        variant = self._variant_index(issue, "next_step")
         if issue.rule == "python:S3923" or "not all the same" in message:
-            return (
-                "A good next step is to simplify the condition or remove duplicated "
-                "branches if they are truly equivalent."
+            options = (
+                (
+                    "A good next step is to simplify the condition or remove "
+                    "duplicated branches if they are truly equivalent."
+                ),
+                (
+                    "Consider collapsing the conditional if all branches are "
+                    "effectively doing the same work."
+                ),
+                (
+                    "Try simplifying the control flow so each branch has a distinct "
+                    "outcome, or remove the condition entirely."
+                ),
+                (
+                    "A useful next step is to rewrite or remove the conditional so it "
+                    "no longer repeats the same behavior."
+                ),
             )
+            return options[variant]
         if "unused function parameter" in message:
-            return (
-                "A good next step is to remove the unused parameter or rename it in a way "
-                "that makes the intent explicit if the signature must stay as-is."
+            options = (
+                (
+                    "A good next step is to remove the unused parameter or rename it "
+                    "in a way that makes the intent explicit if the signature must "
+                    "stay as-is."
+                ),
+                (
+                    "Consider removing the parameter, or marking it clearly as "
+                    "intentional if the signature cannot change."
+                ),
+                (
+                    "A useful next step is to drop the parameter or make its unused "
+                    "role explicit in the signature."
+                ),
+                (
+                    "Try removing the unused parameter unless the interface requires "
+                    "it to remain in place."
+                ),
             )
+            return options[variant]
         if "unused local variable" in message:
-            return (
-                "A good next step is to remove the variable or replace it with `_` "
-                "if it is intentional."
+            options = (
+                (
+                    "A good next step is to remove the variable or replace it with "
+                    "`_` if it is intentional."
+                ),
+                (
+                    "Consider deleting the variable, or rename it to `_` if it is "
+                    "intentionally unused."
+                ),
+                (
+                    "A useful next step is to remove the unused variable unless it is "
+                    "there only as an intentional placeholder."
+                ),
+                (
+                    "Try removing the variable, or make the intent explicit with `_` "
+                    "if it must remain unused."
+                ),
             )
+            return options[variant]
         if "duplicating this literal" in message:
-            return "A good next step is to extract the repeated literal into a named constant."
-        if "function is empty" in message or issue.rule == "python:S1186":
-            return (
-                "A good next step is to document why the function is intentionally empty "
-                "or complete the implementation."
+            options = (
+                "A good next step is to extract the repeated literal into a named constant.",
+                (
+                    "Consider replacing the repeated literal with a constant so the "
+                    "intent is clearer in one place."
+                ),
+                (
+                    "A useful next step is to centralize the repeated literal behind a "
+                    "constant or shared name."
+                ),
+                (
+                    "Try extracting the duplicated literal so the code has a single "
+                    "source of truth for it."
+                ),
             )
+            return options[variant]
+        if "function is empty" in message or issue.rule == "python:S1186":
+            options = (
+                (
+                    "A good next step is to document why the function is intentionally "
+                    "empty or complete the implementation."
+                ),
+                (
+                    "Consider adding a clear explanation for the empty function body, "
+                    "or filling in the missing behavior."
+                ),
+                (
+                    "A useful next step is to either justify the empty body in code or "
+                    "complete the implementation."
+                ),
+                (
+                    "Try making the empty function intentional and explicit, or "
+                    "implement the missing logic."
+                ),
+            )
+            return options[variant]
         if issue.issue_type == "BUG":
-            return "A good next step is to verify the logic around the flagged code path."
-        return "A good next step is to simplify or clarify the flagged code where possible."
+            options = (
+                "A good next step is to verify the logic around the flagged code path.",
+                (
+                    "Consider checking the surrounding logic to confirm the current "
+                    "behavior is really intended."
+                ),
+                (
+                    "A useful next step is to validate the code path and confirm it "
+                    "behaves as expected."
+                ),
+                (
+                    "Try reviewing the flagged logic path against the expected "
+                    "behavior before changing it."
+                ),
+            )
+            return options[variant]
+        options = (
+            "A good next step is to simplify or clarify the flagged code where possible.",
+            "Consider simplifying the flagged code so the intent is easier to read directly.",
+            "A useful next step is to make the flagged code clearer and easier to follow.",
+            "Try simplifying the flagged code so the intent is more obvious at a glance.",
+        )
+        return options[variant]
 
     def _build_evidence_note(
         self,
@@ -144,15 +291,55 @@ class IssueEnricher:
             historical_context,
             self._issue_kind(issue),
         )
+        variant = self._variant_index(issue, "evidence")
         if change_kind == "cleanup":
-            return "Similar cases were usually resolved with cleanup around the flagged code."
-        if change_kind == "behavior":
-            return "Similar cases were more often handled as behavior-oriented fixes."
-        if change_kind == "supporting":
-            return (
-                "Similar cases often came with follow-up updates around tests, documentation, "
-                "or nearby code cleanup."
+            options = (
+                "Similar cases were usually resolved with cleanup around the flagged code.",
+                "In similar cases, developers usually handled this as a cleanup task.",
+                (
+                    "Historically, issues like this were more often addressed by "
+                    "simplifying nearby code."
+                ),
+                (
+                    "Looking at similar cases, this was usually handled as cleanup "
+                    "rather than a larger change."
+                ),
             )
+            return options[variant]
+        if change_kind == "behavior":
+            options = (
+                "Similar cases were more often handled as behavior-oriented fixes.",
+                "In similar cases, developers usually treated this as a logic-related fix.",
+                (
+                    "Historically, issues like this were more often resolved through "
+                    "behavior-focused changes."
+                ),
+                (
+                    "Looking at similar cases, this was usually handled more like a "
+                    "fix than a cleanup."
+                ),
+            )
+            return options[variant]
+        if change_kind == "supporting":
+            options = (
+                (
+                    "Similar cases often came with follow-up updates around tests, "
+                    "documentation, or nearby code cleanup."
+                ),
+                (
+                    "In similar cases, developers often made supporting updates "
+                    "around the flagged code rather than changing core behavior."
+                ),
+                (
+                    "Historically, issues like this were often handled with nearby "
+                    "follow-up work such as tests, docs, or cleanup."
+                ),
+                (
+                    "Looking at similar cases, this usually led to supporting changes "
+                    "around the flagged area."
+                ),
+            )
+            return options[variant]
         return None
 
     @staticmethod
@@ -219,3 +406,8 @@ class IssueEnricher:
         if normalized in {"docs", "test", "build", "ci"}:
             return "supporting"
         return "cleanup"
+
+    @staticmethod
+    def _variant_index(issue: SonarIssue, scope: str) -> int:
+        token = f"{scope}:{issue.rule}:{issue.message}"
+        return sum(ord(char) for char in token) % 4

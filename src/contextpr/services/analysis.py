@@ -141,9 +141,12 @@ class AnalysisService:
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
     ) -> str:
-        sections = [issue.message]
+        sections = [
+            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
+            issue.message,
+        ]
         if enrichment is not None:
-            sections = AnalysisService._enrichment_blocks(enrichment)
+            sections.extend(AnalysisService._enrichment_blocks(enrichment))
 
         sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
         return "\n\n".join(sections)
