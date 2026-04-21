@@ -1,13 +1,53 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from contextpr.enrichment.history import HistoricalContext, IssueHistoryRetriever
-from contextpr.enrichment.intent import IntentClassifier, IntentPrediction
+from contextpr.enrichment.intent import IntentPrediction
 from contextpr.models import SonarIssue
 
 VariantOptions = tuple[str, str, str, str]
+
+MIN_HISTORY_SAMPLE_SIZE = 5
+MIN_HISTORY_LABEL_SHARE = 0.5
+MIN_STRONG_HISTORY_MATCHES = 2
+
+PATTERN_BY_RULE = {
+    "python:S3923": "duplicate_condition_branches",
+    "python:S1172": "unused_function_parameter",
+    "python:S1481": "unused_local_variable",
+    "python:S1192": "duplicated_literal",
+    "python:S1186": "empty_function",
+}
+
+TRIVIAL_PATTERNS = {
+    "unused_function_parameter",
+    "unused_local_variable",
+    "duplicated_literal",
+    "empty_function",
+}
+
+DETAILED_PATTERNS = {
+    "duplicate_condition_branches",
+    "behavior_risk",
+}
+
+BUCKET_LABELS = {
+    "cleanup": "routine cleanup",
+    "behavior": "behavior-oriented fixes",
+    "supporting": "supporting updates",
+}
+
+
+class GuidanceLevel(StrEnum):
+    NONE = "none"
+    MINIMAL = "minimal"
+    CONTEXTUAL = "contextual"
+    DETAILED = "detailed"
+
 
 SUMMARY_BY_PATTERN: dict[str, str] = {
     "duplicate_condition_branches": (
@@ -197,57 +237,12 @@ NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
     ),
 }
 
-EVIDENCE_OPTIONS: dict[str, VariantOptions] = {
-    "cleanup": (
-        "Similar cases were usually resolved with cleanup around the flagged code.",
-        "In similar cases, developers usually handled this as a cleanup task.",
-        (
-            "Historically, issues like this were more often addressed by "
-            "simplifying nearby code."
-        ),
-        (
-            "Looking at similar cases, this was usually handled as cleanup rather "
-            "than a larger change."
-        ),
-    ),
-    "behavior": (
-        "Similar cases were more often handled as behavior-oriented fixes.",
-        "In similar cases, developers usually treated this as a logic-related fix.",
-        (
-            "Historically, issues like this were more often resolved through "
-            "behavior-focused changes."
-        ),
-        (
-            "Looking at similar cases, this was usually handled more like a fix "
-            "than a cleanup."
-        ),
-    ),
-    "supporting": (
-        (
-            "Similar cases often came with follow-up updates around tests, "
-            "documentation, or nearby code cleanup."
-        ),
-        (
-            "In similar cases, developers often made supporting updates around "
-            "the flagged code rather than changing core behavior."
-        ),
-        (
-            "Historically, issues like this were often handled with nearby "
-            "follow-up work such as tests, docs, or cleanup."
-        ),
-        (
-            "Looking at similar cases, this usually led to supporting changes "
-            "around the flagged area."
-        ),
-    ),
-}
-
-
 @dataclass(frozen=True, slots=True)
 class DeveloperGuidance:
-    summary: str
-    explanation: str
-    next_step: str
+    level: GuidanceLevel
+    summary: str | None = None
+    explanation: str | None = None
+    next_step: str | None = None
     evidence_note: str | None = None
 
 
@@ -261,37 +256,49 @@ class IssueEnrichment:
 class IssueEnricher:
 
     def __init__(self, model_path: Path, dataset_path: Path) -> None:
-        self._intent_classifier = IntentClassifier(model_path)
+        self._model_path = model_path
         self._history_retriever = IssueHistoryRetriever(dataset_path)
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
-        intent_prediction = self._intent_classifier.predict(issue)
         historical_context = self._history_retriever.find_context(issue)
-        guidance = self._build_guidance(issue, intent_prediction, historical_context)
+        guidance = self._build_guidance(issue, historical_context)
         if guidance is None:
             return None
 
         return IssueEnrichment(
             guidance=guidance,
-            intent_prediction=intent_prediction,
+            intent_prediction=None,
             historical_context=historical_context,
         )
 
     def _build_guidance(
         self,
         issue: SonarIssue,
-        intent_prediction: IntentPrediction | None,
         historical_context: HistoricalContext | None,
     ) -> DeveloperGuidance | None:
         issue_pattern = self._issue_pattern(issue)
-        summary = self._build_summary(issue_pattern)
-        explanation = self._build_explanation(issue, intent_prediction, historical_context)
-        next_step = self._build_next_step(issue_pattern)
-        evidence_note = self._build_evidence_note(issue, intent_prediction, historical_context)
-        if not summary and not explanation and not next_step and evidence_note is None:
+        guidance_level = self._guidance_level(issue, issue_pattern, historical_context)
+        if guidance_level is GuidanceLevel.NONE:
             return None
 
+        evidence_note = self._build_evidence_note(issue, historical_context)
+        if guidance_level is GuidanceLevel.MINIMAL:
+            return DeveloperGuidance(level=guidance_level, evidence_note=evidence_note)
+
+        summary = (
+            self._build_summary(issue_pattern)
+            if guidance_level is GuidanceLevel.DETAILED
+            else None
+        )
+        explanation = self._build_explanation(issue, historical_context)
+        next_step = (
+            self._build_next_step(issue_pattern)
+            if guidance_level is GuidanceLevel.DETAILED
+            else None
+        )
+
         return DeveloperGuidance(
+            level=guidance_level,
             summary=summary,
             explanation=explanation,
             next_step=next_step,
@@ -302,8 +309,11 @@ class IssueEnricher:
         return SUMMARY_BY_PATTERN.get(issue_pattern, SUMMARY_BY_PATTERN["general_review"])
 
     def _issue_pattern(self, issue: SonarIssue) -> str:
+        if issue.rule in PATTERN_BY_RULE:
+            return PATTERN_BY_RULE[issue.rule]
+
         message = issue.message.lower()
-        if issue.rule == "python:S3923" or "not all the same" in message:
+        if "not all the same" in message:
             return "duplicate_condition_branches"
         if "unused function parameter" in message:
             return "unused_function_parameter"
@@ -319,14 +329,31 @@ class IssueEnricher:
             return "cleanup_candidate"
         return "general_review"
 
+    def _guidance_level(
+        self,
+        issue: SonarIssue,
+        issue_pattern: str,
+        historical_context: HistoricalContext | None,
+    ) -> GuidanceLevel:
+        has_grounded_history = self._has_grounded_history(historical_context)
+        if issue_pattern in TRIVIAL_PATTERNS:
+            return GuidanceLevel.MINIMAL if has_grounded_history else GuidanceLevel.NONE
+
+        if issue_pattern in DETAILED_PATTERNS or issue.issue_type == "BUG":
+            return GuidanceLevel.DETAILED
+
+        if has_grounded_history:
+            return GuidanceLevel.CONTEXTUAL
+
+        return GuidanceLevel.NONE
+
     def _build_explanation(
         self,
         issue: SonarIssue,
-        intent_prediction: IntentPrediction | None,
         historical_context: HistoricalContext | None,
     ) -> str:
         issue_kind = self._issue_kind(issue)
-        change_kind = self._change_kind(intent_prediction, historical_context, issue_kind)
+        change_kind = self._change_kind(historical_context, issue_kind)
         option_key = change_kind if change_kind != "cleanup" else issue_kind
         if option_key not in EXPLANATION_OPTIONS:
             option_key = "cleanup"
@@ -347,28 +374,31 @@ class IssueEnricher:
     def _build_evidence_note(
         self,
         issue: SonarIssue,
-        intent_prediction: IntentPrediction | None,
         historical_context: HistoricalContext | None,
     ) -> str | None:
-        if historical_context is None or historical_context.sample_size < 5:
+        if not self._has_grounded_history(historical_context):
             return None
 
         change_kind = self._change_kind(
-            intent_prediction,
             historical_context,
             self._issue_kind(issue),
         )
-        return self._pick_option(issue, "evidence", EVIDENCE_OPTIONS.get(change_kind))
+        return self._history_note(historical_context, change_kind)
 
     @staticmethod
     def _issue_kind(issue: SonarIssue) -> str:
+        pattern = PATTERN_BY_RULE.get(issue.rule)
+        if pattern in TRIVIAL_PATTERNS:
+            return "cleanup"
+        if pattern == "duplicate_condition_branches":
+            return "general"
+
         message = issue.message.lower()
         if issue.issue_type == "BUG":
             return "correctness"
         if (
             "unused" in message
             or "duplicating this literal" in message
-            or "not all the same" in message
         ):
             return "cleanup"
         if issue.tags and any(tag in {"design", "unused", "suspicious"} for tag in issue.tags):
@@ -377,7 +407,6 @@ class IssueEnricher:
 
     def _change_kind(
         self,
-        intent_prediction: IntentPrediction | None,
         historical_context: HistoricalContext | None,
         issue_kind: str,
     ) -> str:
@@ -386,7 +415,7 @@ class IssueEnricher:
         if issue_kind == "cleanup":
             return "cleanup"
 
-        label_scores = self._label_scores(intent_prediction, historical_context)
+        label_scores = self._label_scores(historical_context)
         if (
             label_scores["behavior"] > label_scores["cleanup"]
             and label_scores["behavior"] >= label_scores["supporting"]
@@ -401,20 +430,84 @@ class IssueEnricher:
 
     @staticmethod
     def _label_scores(
-        intent_prediction: IntentPrediction | None,
         historical_context: HistoricalContext | None,
     ) -> dict[str, float]:
         scores = {"cleanup": 0.0, "behavior": 0.0, "supporting": 0.0}
-        if intent_prediction is not None:
-            scores[IssueEnricher._bucket_for_label(intent_prediction.label)] += (
-                intent_prediction.confidence or 0.5
+        if not IssueEnricher._has_grounded_history(historical_context):
+            return scores
+
+        assert historical_context is not None
+        for label, count in historical_context.label_distribution:
+            scores[IssueEnricher._bucket_for_label(label)] += (
+                count / historical_context.sample_size
             )
-        if historical_context is not None and historical_context.sample_size > 0:
-            for label, count in historical_context.label_distribution:
-                scores[IssueEnricher._bucket_for_label(label)] += (
-                    count / historical_context.sample_size
-                )
         return scores
+
+    @staticmethod
+    def _bucket_counts(historical_context: HistoricalContext) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for label, count in historical_context.label_distribution:
+            counts[IssueEnricher._bucket_for_label(label)] += count
+        return counts
+
+    @staticmethod
+    def _history_note(
+        historical_context: HistoricalContext | None,
+        change_kind: str,
+    ) -> str | None:
+        if historical_context is None:
+            return None
+
+        counts = IssueEnricher._bucket_counts(historical_context)
+        if not counts:
+            return None
+
+        ranked = counts.most_common()
+        top_bucket, top_count = ranked[0]
+        top_share = top_count / historical_context.sample_size
+        if len(ranked) > 1:
+            second_bucket, second_count = ranked[1]
+            second_share = second_count / historical_context.sample_size
+            if second_share >= 0.3 and top_share - second_share <= 0.2:
+                return (
+                    "Historical note: similar cases were split between "
+                    f"{BUCKET_LABELS[top_bucket]} and {BUCKET_LABELS[second_bucket]}."
+                )
+
+        phrase = IssueEnricher._history_strength_phrase(historical_context)
+        bucket_label = BUCKET_LABELS.get(change_kind, BUCKET_LABELS[top_bucket])
+        return f"Historical note: {phrase} {bucket_label}."
+
+    @staticmethod
+    def _history_strength_phrase(historical_context: HistoricalContext) -> str:
+        if (
+            historical_context.sample_size >= 15
+            and historical_context.same_rule_matches >= 5
+            and historical_context.strongest_label_share >= 0.75
+        ):
+            return "similar cases were usually handled as"
+
+        if (
+            historical_context.sample_size >= 8
+            and historical_context.same_rule_matches >= 3
+            and historical_context.strongest_label_share >= 0.65
+        ):
+            return "similar cases were often handled as"
+
+        return "in a small set of similar cases, developers leaned toward"
+
+    @staticmethod
+    def _has_grounded_history(historical_context: HistoricalContext | None) -> bool:
+        if historical_context is None:
+            return False
+
+        if historical_context.sample_size < MIN_HISTORY_SAMPLE_SIZE:
+            return False
+
+        has_rule_support = historical_context.same_rule_matches > 0
+        has_label_consensus = historical_context.strongest_label_share >= MIN_HISTORY_LABEL_SHARE
+        has_strong_matches = historical_context.strong_match_count >= MIN_STRONG_HISTORY_MATCHES
+        return has_rule_support and has_label_consensus and has_strong_matches
 
     @staticmethod
     def _bucket_for_label(label: str) -> str:

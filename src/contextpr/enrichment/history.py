@@ -19,6 +19,9 @@ class HistoricalContext:
     sample_size: int
     label_distribution: tuple[tuple[str, int], ...]
     same_rule_matches: int
+    strongest_label: str | None = None
+    strongest_label_share: float = 0.0
+    strong_match_count: int = 0
 
 
 class IssueHistoryRetriever:
@@ -42,21 +45,23 @@ class IssueHistoryRetriever:
         scored = dataset.assign(
             retrieval_score=dataset.apply(lambda row: self._score_row(issue, row), axis=1)
         )
-        scored = scored[scored["retrieval_score"] > 0].sort_values(
-            by=["retrieval_score", "creation_date"],
-            ascending=[False, False],
-            na_position="last",
-        )
+        scored = scored[scored["retrieval_score"] > 0]
+        scored = self._sort_scored_matches(scored)
         if scored.empty:
             return None
 
         similar = scored.head(top_k)
         distribution = Counter(str(label) for label in similar["ccs_classification"])
         same_rule_matches = int((similar["rule"] == issue.rule).sum())
+        strongest_label, strongest_count = distribution.most_common(1)[0]
+        strong_match_count = int((similar["retrieval_score"] >= 6.0).sum())
         return HistoricalContext(
             sample_size=len(similar),
             label_distribution=tuple(distribution.most_common(3)),
             same_rule_matches=same_rule_matches,
+            strongest_label=strongest_label,
+            strongest_label_share=round(strongest_count / len(similar), 4),
+            strong_match_count=strong_match_count,
         )
 
     def _load_dataset(self) -> pd.DataFrame:
@@ -72,6 +77,20 @@ class IssueHistoryRetriever:
         if suffix == ".csv":
             return pd.read_csv(self._dataset_path)
         raise ValueError(f"Unsupported dataset format: {self._dataset_path}")
+
+    @staticmethod
+    def _sort_scored_matches(scored: pd.DataFrame) -> pd.DataFrame:
+        sort_columns = ["retrieval_score"]
+        ascending = [False]
+        if "creation_date" in scored.columns:
+            sort_columns.append("creation_date")
+            ascending.append(False)
+
+        return scored.sort_values(
+            by=sort_columns,
+            ascending=ascending,
+            na_position="last",
+        )
 
     @staticmethod
     def _score_row(issue: SonarIssue, row: pd.Series) -> float:

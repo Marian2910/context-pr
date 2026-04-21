@@ -1,5 +1,6 @@
 from contextpr.enrichment import (
     DeveloperGuidance,
+    GuidanceLevel,
     HistoricalContext,
     IntentPrediction,
     IssueEnrichment,
@@ -22,10 +23,7 @@ EXPLANATION_OPTIONS = (
 )
 
 EVIDENCE_OPTIONS = (
-    "Similar cases were usually resolved with cleanup around the flagged code.",
-    "In similar cases, developers usually handled this as a cleanup task.",
-    "Historically, issues like this were more often addressed by simplifying nearby code.",
-    "Looking at similar cases, this was usually handled as cleanup rather than a larger change.",
+    "Historical note: in a small set of similar cases, developers leaned toward routine cleanup.",
 )
 
 
@@ -108,6 +106,7 @@ class FakeIssueEnricher:
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
         return IssueEnrichment(
             guidance=DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
                 summary=(
                     "Sonar flagged this because all branches of the condition appear "
                     "to do the same thing."
@@ -118,8 +117,8 @@ class FakeIssueEnricher:
                     "branches if they are truly equivalent."
                 ),
                 evidence_note=(
-                    "Similar cases were usually resolved with cleanup around the "
-                    "flagged code."
+                    "Historical note: in a small set of similar cases, "
+                    "developers leaned toward routine cleanup."
                 ),
             ),
             intent_prediction=IntentPrediction(label="refactor", confidence=0.82),

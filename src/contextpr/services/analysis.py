@@ -175,14 +175,16 @@ class AnalysisService:
 
     @staticmethod
     def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
-        blocks = [
-            enrichment.guidance.summary,
-            enrichment.guidance.explanation,
-            enrichment.guidance.next_step,
+        return [
+            block
+            for block in (
+                enrichment.guidance.summary,
+                enrichment.guidance.explanation,
+                enrichment.guidance.next_step,
+                enrichment.guidance.evidence_note,
+            )
+            if block is not None
         ]
-        if enrichment.guidance.evidence_note is not None:
-            blocks.append(enrichment.guidance.evidence_note)
-        return blocks
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()
