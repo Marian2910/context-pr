@@ -13,7 +13,6 @@ from ml.model import RANDOM_STATE, build_model
 
 
 def train_model(df: pd.DataFrame, output_path: str) -> Pipeline:
-    """Train the intent classifier and persist it to disk."""
     dataset = load_dataset(df)
     x = dataset.drop(columns=[TARGET_COLUMN])
     y = dataset[TARGET_COLUMN]
@@ -36,7 +35,6 @@ def train_model(df: pd.DataFrame, output_path: str) -> Pipeline:
 
 
 def _print_class_distribution(labels: pd.Series) -> None:
-    """Print class counts for transparency before training."""
     print("Class distribution:")
     distribution = labels.value_counts(dropna=False).sort_index()
     for label, count in distribution.items():
@@ -44,7 +42,6 @@ def _print_class_distribution(labels: pd.Series) -> None:
 
 
 def _save_model(model: Pipeline, output_path: str) -> None:
-    """Persist a trained model to disk."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, path)

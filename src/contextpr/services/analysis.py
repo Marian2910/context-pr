@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from contextpr.enrichment import IssueEnrichment
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -16,7 +17,6 @@ COMMENT_MARKER_PREFIX = "<!-- contextpr:issue="
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
-    """Summarize the result of an analysis run."""
 
     pull_request: PullRequestRef
     fetched_issues: int
@@ -27,10 +27,9 @@ class AnalysisResult:
 
 
 class GitHubAnalysisClient(Protocol):
-    """Minimal GitHub client contract needed by the analysis service."""
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        """Return the list of files changed in the pull request."""
+        ...
 
     def create_review(
         self,
@@ -38,39 +37,44 @@ class GitHubAnalysisClient(Protocol):
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        """Create a pull request review with inline comments."""
+        ...
 
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        """Return existing inline review comments."""
+        ...
 
     def delete_review_comment(self, comment_id: int) -> None:
-        """Delete an existing review comment."""
+        ...
 
     def get_authenticated_user_login(self) -> str:
-        """Return the login of the configured GitHub identity."""
+        ...
 
 
 class SonarAnalysisClient(Protocol):
-    """Minimal Sonar client contract needed by the analysis service."""
 
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        """Return Sonar issues for the pull request."""
+        ...
+
+
+class IssueEnrichmentClient(Protocol):
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
+        ...
 
 
 class AnalysisService:
-    """Coordinate the MVP workflow from Sonar issues to GitHub PR comments."""
 
     def __init__(
         self,
         github_client: GitHubAnalysisClient,
         sonar_client: SonarAnalysisClient,
+        issue_enricher: IssueEnrichmentClient | None = None,
     ) -> None:
-        """Store the clients needed for analysis."""
         self._github_client = github_client
         self._sonar_client = sonar_client
+        self._issue_enricher = issue_enricher
 
     def analyze_pull_request(
         self,
@@ -78,7 +82,6 @@ class AnalysisService:
         pull_request: PullRequestRef,
         dry_run: bool,
     ) -> AnalysisResult:
-        """Fetch Sonar issues and optionally publish them as PR review comments."""
         pull_request_files = self._github_client.get_pull_request_files(pull_request)
         changed_lines_by_file = {
             pr_file.path: self._extract_added_lines(pr_file.patch)
@@ -92,6 +95,11 @@ class AnalysisService:
                 comment := self._issue_to_comment(
                     issue,
                     changed_lines=changed_lines_by_file.get(issue.location.path, set()),
+                    enrichment=(
+                        self._issue_enricher.enrich(issue)
+                        if self._issue_enricher is not None
+                        else None
+                    ),
                 )
             )
             is not None
@@ -117,29 +125,66 @@ class AnalysisService:
     def _issue_to_comment(
         issue: SonarIssue,
         changed_lines: set[int],
+        enrichment: IssueEnrichment | None,
     ) -> GitHubReviewComment | None:
-        """Convert a Sonar issue into a GitHub inline review comment if possible."""
         line = issue.location.line
         if line is None or line not in changed_lines:
             return None
 
+        start_line = AnalysisService._comment_start_line(issue, changed_lines)
+        end_line = (
+            issue.location.end_line
+            if start_line is not None and issue.location.end_line is not None
+            else line
+        )
         return GitHubReviewComment(
             path=issue.location.path,
-            line=line,
-            body=AnalysisService._build_comment_body(issue),
+            line=end_line,
+            body=AnalysisService._build_comment_body(issue, enrichment),
+            start_line=start_line,
+            start_side="RIGHT" if start_line is not None else None,
         )
 
     @staticmethod
-    def _build_comment_body(issue: SonarIssue) -> str:
-        """Render a minimal MVP comment body from a Sonar issue."""
-        return (
-            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):\n\n"
-            f"{issue.message}\n\n"
-            f"{COMMENT_MARKER_PREFIX}{issue.key} -->"
-        )
+    def _comment_start_line(issue: SonarIssue, changed_lines: set[int]) -> int | None:
+        start_line = issue.location.line
+        end_line = issue.location.end_line
+        if start_line is None or end_line is None or end_line <= start_line:
+            return None
+
+        issue_lines = set(range(start_line, end_line + 1))
+        if issue_lines.issubset(changed_lines):
+            return start_line
+
+        return None
+
+    @staticmethod
+    def _build_comment_body(
+        issue: SonarIssue,
+        enrichment: IssueEnrichment | None,
+    ) -> str:
+        sections = [
+            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
+            issue.message,
+        ]
+        if enrichment is not None:
+            sections.extend(AnalysisService._enrichment_blocks(enrichment))
+
+        sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
+        blocks = [
+            enrichment.guidance.summary,
+            enrichment.guidance.explanation,
+            enrichment.guidance.next_step,
+        ]
+        if enrichment.guidance.evidence_note is not None:
+            blocks.append(enrichment.guidance.evidence_note)
+        return blocks
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
-        """Delete previous ContextPR comments so each run leaves a clean PR state."""
         author_login = self._github_client.get_authenticated_user_login()
         existing_comments = self._github_client.list_existing_review_comments(pull_request)
         managed_comments = [
@@ -155,7 +200,6 @@ class AnalysisService:
 
     @staticmethod
     def _extract_added_lines(patch: str | None) -> set[int]:
-        """Parse a unified diff patch and return right-side added line numbers."""
         if not patch:
             return set()
 
@@ -189,7 +233,6 @@ class AnalysisService:
 
     @staticmethod
     def _parse_hunk_new_start(header: str) -> int | None:
-        """Extract the new-file start line from a unified diff hunk header."""
         parts = header.split()
         if len(parts) < 3:
             return None

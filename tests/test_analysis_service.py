@@ -1,5 +1,9 @@
-"""Tests for the analysis orchestration service."""
-
+from contextpr.enrichment import (
+    DeveloperGuidance,
+    HistoricalContext,
+    IntentPrediction,
+    IssueEnrichment,
+)
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -10,9 +14,22 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
+EXPLANATION_OPTIONS = (
+    "This looks like a cleanup issue rather than a functional change.",
+    "This seems more like code cleanup than a behavior fix.",
+    "This warning points more toward simplification than a change in behavior.",
+    "This looks like something to clean up rather than a functional defect.",
+)
+
+EVIDENCE_OPTIONS = (
+    "Similar cases were usually resolved with cleanup around the flagged code.",
+    "In similar cases, developers usually handled this as a cleanup task.",
+    "Historically, issues like this were more often addressed by simplifying nearby code.",
+    "Looking at similar cases, this was usually handled as cleanup rather than a larger change.",
+)
+
 
 class FakeGitHubClient:
-    """Simple fake GitHub client for service tests."""
 
     def __init__(self) -> None:
         """Initialize the fake client state."""
@@ -20,7 +37,6 @@ class FakeGitHubClient:
         self.deleted_comment_ids: list[int] = []
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        """Return deterministic changed files."""
         return [
             PullRequestFile(
                 path="src/app.py",
@@ -36,14 +52,12 @@ class FakeGitHubClient:
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        """Record created reviews for assertions."""
         self.created_reviews.append((pull_request, comments))
 
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        """Return an existing managed comment to be cleaned up."""
         return [
             ExistingReviewComment(
                 comment_id=99,
@@ -55,26 +69,22 @@ class FakeGitHubClient:
         ]
 
     def delete_review_comment(self, comment_id: int) -> None:
-        """Record deleted review comments for assertions."""
         self.deleted_comment_ids.append(comment_id)
 
     def get_authenticated_user_login(self) -> str:
-        """Return the login used by the fake GitHub identity."""
         return "contextpr-bot"
 
 
 class FakeSonarClient:
-    """Simple fake Sonar client for service tests."""
 
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        """Return a mix of eligible and ineligible issues."""
         return [
             SonarIssue(
                 key="issue-1",
                 rule="python:S100",
                 severity="MAJOR",
                 message="First issue",
-                location=IssueLocation(path="src/app.py", line=11),
+                location=IssueLocation(path="src/app.py", line=11, end_line=12),
             ),
             SonarIssue(
                 key="issue-2",
@@ -93,12 +103,40 @@ class FakeSonarClient:
         ]
 
 
+class FakeIssueEnricher:
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment:
+        return IssueEnrichment(
+            guidance=DeveloperGuidance(
+                summary=(
+                    "Sonar flagged this because all branches of the condition appear "
+                    "to do the same thing."
+                ),
+                explanation="This looks like a cleanup issue rather than a functional change.",
+                next_step=(
+                    "A good next step is to simplify the condition or remove duplicated "
+                    "branches if they are truly equivalent."
+                ),
+                evidence_note=(
+                    "Similar cases were usually resolved with cleanup around the "
+                    "flagged code."
+                ),
+            ),
+            intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
+            historical_context=HistoricalContext(
+                sample_size=6,
+                label_distribution=(("refactor", 4), ("fix", 2)),
+                same_rule_matches=3,
+            ),
+        )
+
+
 def test_analyze_pull_request_posts_only_eligible_comments() -> None:
-    """Only Sonar issues with path and line in the PR should be posted."""
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
+        issue_enricher=FakeIssueEnricher(),
     )
 
     result = service.analyze_pull_request(
@@ -114,15 +152,23 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
+    assert comments[0].start_line == 11
+    assert comments[0].line == 12
+    assert "Sonar reported a `MAJOR` issue (`python:S100`):" in comments[0].body
+    assert "First issue" in comments[0].body
+    assert any(option in comments[0].body for option in EXPLANATION_OPTIONS)
+    assert any(option in comments[0].body for option in EVIDENCE_OPTIONS)
+    assert "Likely remediation intent" not in comments[0].body
+    assert "Historical pattern:" not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
 def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
-    """Dry runs should not create GitHub reviews."""
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
         sonar_client=FakeSonarClient(),
+        issue_enricher=FakeIssueEnricher(),
     )
 
     result = service.analyze_pull_request(
@@ -135,3 +181,42 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     assert result.posted_comments == 0
     assert github_client.created_reviews == []
     assert github_client.deleted_comment_ids == []
+
+
+def test_issue_to_comment_falls_back_to_single_line_when_range_is_not_fully_added() -> None:
+    comment = AnalysisService._issue_to_comment(
+        SonarIssue(
+            key="issue-range",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Repeated branches",
+            location=IssueLocation(path="src/app.py", line=11, end_line=13),
+        ),
+        changed_lines={11, 12},
+        enrichment=None,
+    )
+
+    assert comment is not None
+    assert comment.start_line is None
+    assert comment.line == 11
+
+
+def test_extract_added_lines_handles_multiple_hunks_and_deletions() -> None:
+    patch = (
+        "@@ -1,3 +1,4 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n"
+        " same\n"
+        "+extra\n"
+        "@@ -10,2 +20,3 @@\n"
+        "+later\n"
+        " unchanged\n"
+    )
+
+    assert AnalysisService._extract_added_lines(patch) == {2, 4, 20}
+
+
+def test_extract_added_lines_returns_empty_set_for_invalid_patch() -> None:
+    assert AnalysisService._extract_added_lines(None) == set()
+    assert AnalysisService._extract_added_lines("not a hunk") == set()

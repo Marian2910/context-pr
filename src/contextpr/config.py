@@ -13,6 +13,8 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
+DEFAULT_INTENT_MODEL_PATH = Path("artifacts/intent_classifier.joblib")
+DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 DEFAULT_LOG_LEVEL = "INFO"
 
@@ -23,7 +25,6 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """Application settings loaded from environment variables."""
 
     github_token: str | None = None
     github_app_id: str | None = None
@@ -35,11 +36,12 @@ class Settings:
     sonar_host_url: str = DEFAULT_SONAR_HOST_URL
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
+    intent_model_path: Path = DEFAULT_INTENT_MODEL_PATH
+    issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
     log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Self:
-        """Build settings from a mapping of environment variables."""
         env = os.environ if environ is None else environ
         return cls(
             github_token=(
@@ -65,6 +67,16 @@ class Settings:
             or DEFAULT_SONAR_HOST_URL,
             sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
             sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
+            intent_model_path=_read_path(
+                env,
+                "CONTEXTPR_INTENT_MODEL_PATH",
+                default=DEFAULT_INTENT_MODEL_PATH,
+            ),
+            issue_dataset_path=_read_path(
+                env,
+                "CONTEXTPR_ISSUE_DATASET_PATH",
+                default=DEFAULT_ISSUE_DATASET_PATH,
+            ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
                 or DEFAULT_LOG_LEVEL
@@ -73,17 +85,13 @@ class Settings:
 
     @property
     def github_enabled(self) -> bool:
-        """Return whether GitHub credentials look usable."""
-        return bool(self.github_auth_mode != "none" and self.github_repository)
-
-    @property
-    def github_token_enabled(self) -> bool:
-        """Return whether token-based GitHub authentication is present."""
-        return bool(self.github_token)
+        return bool(
+            (self.github_app_enabled or self.github_token_enabled)
+            and self.github_repository
+        )
 
     @property
     def github_app_enabled(self) -> bool:
-        """Return whether GitHub App credentials are present."""
         return bool(
             self.github_app_id
             and self.github_installation_id
@@ -91,8 +99,11 @@ class Settings:
         )
 
     @property
+    def github_token_enabled(self) -> bool:
+        return bool(self.github_token)
+
+    @property
     def github_auth_mode(self) -> str:
-        """Return the configured GitHub authentication mode."""
         if self.github_app_enabled:
             return "app"
         if self.github_token_enabled:
@@ -102,11 +113,9 @@ class Settings:
 
     @property
     def sonar_enabled(self) -> bool:
-        """Return whether Sonar credentials look usable."""
         return bool(self.sonar_token and self.sonar_project_key)
 
     def require(self, *field_names: str) -> None:
-        """Ensure the named settings fields are populated."""
         missing = [field_name for field_name in field_names if not getattr(self, field_name)]
         if missing:
             formatted = ", ".join(sorted(missing))
@@ -115,7 +124,6 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return cached application settings."""
     return Settings.from_env()
 
 
@@ -125,7 +133,6 @@ def _read_optional(
     *,
     default: str | None = None,
 ) -> str | None:
-    """Read and normalize an optional environment variable."""
     raw_value = environ.get(key)
     if raw_value is None:
         return default
@@ -135,10 +142,22 @@ def _read_optional(
 
 
 def _read_github_private_key() -> str | None:
-    """Read the GitHub App private key from the local secrets directory."""
     key_path = Path.cwd() / DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH
     if not key_path.is_file():
         return None
 
     value = key_path.read_text(encoding="utf-8").strip()
     return value or None
+
+
+def _read_path(
+    environ: Mapping[str, str],
+    key: str,
+    *,
+    default: Path,
+) -> Path:
+    value = _read_optional(environ, key)
+    if value is None:
+        return default
+
+    return Path(value)

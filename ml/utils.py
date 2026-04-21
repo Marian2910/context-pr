@@ -7,7 +7,6 @@ from typing import Any
 
 
 def parse_tags(value: object) -> list[str]:
-    """Normalize tag values into a list of strings."""
     if value is None:
         return []
 
@@ -32,7 +31,6 @@ def parse_tags(value: object) -> list[str]:
 
 
 def extract_severity(value: object) -> str:
-    """Extract a severity value from the impacts payload."""
     parsed = _coerce_to_sequence(value)
     for item in parsed:
         if isinstance(item, dict):
@@ -44,7 +42,6 @@ def extract_severity(value: object) -> str:
 
 
 def extract_file_extension(component: object) -> str:
-    """Extract a normalized file extension from a Sonar component path."""
     if not isinstance(component, str) or not component.strip():
         return "unknown"
 
@@ -54,7 +51,6 @@ def extract_file_extension(component: object) -> str:
 
 
 def _coerce_to_sequence(value: object) -> list[Any]:
-    """Coerce serialized list-like values into a Python list."""
     if value is None:
         return []
 
@@ -76,7 +72,6 @@ def _coerce_to_sequence(value: object) -> list[Any]:
 
 
 def _parse_serialized_value(value: str) -> object:
-    """Parse JSON- or Python-literal-like strings safely."""
     for parser in (json.loads, ast.literal_eval):
         try:
             return parser(value)

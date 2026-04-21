@@ -10,7 +10,6 @@ def evaluate_model(
     x_test: pd.DataFrame,
     y_test: pd.Series,
 ) -> dict[str, float]:
-    """Evaluate a trained model and print a classification report."""
     predictions = model.predict(x_test)
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_test,
