@@ -76,14 +76,14 @@ class SonarQubeClient:
             return None
 
         path = component.split(":", maxsplit=1)[1]
-        issue_key, rule, severity, message, line, issue_type = fields
+        issue_key, rule, severity, message, line, end_line, issue_type = fields
 
         return SonarIssue(
             key=issue_key,
             rule=rule,
             severity=severity,
             message=message,
-            location=IssueLocation(path=path, line=line),
+            location=IssueLocation(path=path, line=line, end_line=end_line),
             issue_type=issue_type,
             tags=SonarQubeClient._extract_tags(payload),
             clean_code_attribute=SonarQubeClient._extract_string(payload, "cleanCodeAttribute"),
@@ -96,7 +96,7 @@ class SonarQubeClient:
     @staticmethod
     def _extract_issue_fields(
         payload: Mapping[str, object],
-    ) -> tuple[str, str, str, str, int | None, str] | None:
+    ) -> tuple[str, str, str, str, int | None, int | None, str] | None:
         issue_key = payload.get("key")
         rule = payload.get("rule")
         severity = payload.get("severity")
@@ -114,7 +114,8 @@ class SonarQubeClient:
             cast(str, rule),
             cast(str, severity),
             cast(str, message),
-            SonarQubeClient._extract_line(payload),
+            SonarQubeClient._extract_start_line(payload),
+            SonarQubeClient._extract_end_line(payload),
             cast(str, issue_type),
         )
 
@@ -135,15 +136,26 @@ class SonarQubeClient:
         return ""
 
     @staticmethod
-    def _extract_line(payload: Mapping[str, object]) -> int | None:
+    def _extract_start_line(payload: Mapping[str, object]) -> int | None:
         return (
             SonarQubeClient._line_from_text_range(payload)
             or SonarQubeClient._line_from_flows(payload)
         )
 
     @staticmethod
+    def _extract_end_line(payload: Mapping[str, object]) -> int | None:
+        return (
+            SonarQubeClient._end_line_from_text_range(payload)
+            or SonarQubeClient._end_line_from_flows(payload)
+        )
+
+    @staticmethod
     def _line_from_text_range(payload: Mapping[str, object]) -> int | None:
         return SonarQubeClient._get_start_line(payload.get("textRange"))
+
+    @staticmethod
+    def _end_line_from_text_range(payload: Mapping[str, object]) -> int | None:
+        return SonarQubeClient._get_end_line(payload.get("textRange"))
 
     @staticmethod
     def _line_from_flows(payload: Mapping[str, object]) -> int | None:
@@ -153,6 +165,19 @@ class SonarQubeClient:
 
         for flow in flows:
             line = SonarQubeClient._line_from_flow(flow)
+            if line is not None:
+                return line
+
+        return None
+
+    @staticmethod
+    def _end_line_from_flows(payload: Mapping[str, object]) -> int | None:
+        flows = payload.get("flows")
+        if not isinstance(flows, list):
+            return None
+
+        for flow in flows:
+            line = SonarQubeClient._end_line_from_flow(flow)
             if line is not None:
                 return line
 
@@ -175,6 +200,22 @@ class SonarQubeClient:
         return None
 
     @staticmethod
+    def _end_line_from_flow(flow: object) -> int | None:
+        if not isinstance(flow, Mapping):
+            return None
+
+        locations = flow.get("locations")
+        if not isinstance(locations, list):
+            return None
+
+        for location in locations:
+            line = SonarQubeClient._end_line_from_location(location)
+            if line is not None:
+                return line
+
+        return None
+
+    @staticmethod
     def _line_from_location(location: object) -> int | None:
         if not isinstance(location, Mapping):
             return None
@@ -182,9 +223,24 @@ class SonarQubeClient:
         return SonarQubeClient._get_start_line(location.get("textRange"))
 
     @staticmethod
+    def _end_line_from_location(location: object) -> int | None:
+        if not isinstance(location, Mapping):
+            return None
+
+        return SonarQubeClient._get_end_line(location.get("textRange"))
+
+    @staticmethod
     def _get_start_line(text_range: object) -> int | None:
         if isinstance(text_range, Mapping):
             start_line = text_range.get("startLine")
             if isinstance(start_line, int):
                 return start_line
+        return None
+
+    @staticmethod
+    def _get_end_line(text_range: object) -> int | None:
+        if isinstance(text_range, Mapping):
+            end_line = text_range.get("endLine")
+            if isinstance(end_line, int):
+                return end_line
         return None

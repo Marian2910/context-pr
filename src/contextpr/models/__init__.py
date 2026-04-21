@@ -24,6 +24,7 @@ class IssueLocation:
 
     path: str
     line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,8 @@ class GitHubReviewComment:
     line: int
     body: str
     side: str = "RIGHT"
+    start_line: int | None = None
+    start_side: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

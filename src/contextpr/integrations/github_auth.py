@@ -94,11 +94,15 @@ class GitHubAuth:
         return self._settings.github_auth_mode
 
     def require_configured(self) -> None:
-        if self.auth_mode != "app":
+        if self.auth_mode == "none":
             raise ConfigurationError(
                 "Missing GitHub authentication. Configure CONTEXTPR_GITHUB_TOKEN "
                 "or GitHub App credentials."
             )
+
+        if self.auth_mode == "token":
+            self._settings.require("github_token")
+            return
 
         self._settings.require(
             "github_app_id",
@@ -106,11 +110,11 @@ class GitHubAuth:
             "github_private_key",
         )
 
-    def get_token(self) -> str | None:
+    def get_token(self) -> str:
         self.require_configured()
         if self.auth_mode == "token":
             logger.info("Using GitHub token authentication.")
-            return self._settings.github_token
+            return self._settings.github_token or ""
 
         if self._installation_token is None:
             logger.info("Using GitHub App authentication.")

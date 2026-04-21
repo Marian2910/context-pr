@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from contextpr.enrichment import IssueEnricher, IssueHistoryRetriever
 from contextpr.models import IssueLocation, SonarIssue
 
@@ -224,3 +226,56 @@ def test_issue_enricher_produces_plain_language_for_duplicate_condition(tmp_path
     assert enrichment.guidance.explanation in EXPLANATION_OPTIONS
     assert enrichment.guidance.next_step in NEXT_STEP_OPTIONS
     assert enrichment.guidance.evidence_note in EVIDENCE_OPTIONS
+
+
+def test_history_retriever_returns_none_when_dataset_is_missing(tmp_path: Path) -> None:
+    retriever = IssueHistoryRetriever(tmp_path / "missing.csv")
+
+    assert retriever.find_context(_issue()) is None
+
+
+def test_history_retriever_rejects_unsupported_dataset_format(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "issues.json"
+    dataset_path.write_text("[]", encoding="utf-8")
+    retriever = IssueHistoryRetriever(dataset_path)
+
+    with pytest.raises(ValueError, match="Unsupported dataset format"):
+        retriever.find_context(_issue())
+
+
+def test_history_retriever_returns_none_when_no_rows_match(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Totally unrelated\",python:S1,BUG,\"[]\",COMPLETE,"
+                    "CONVENTIONAL,\"[{'severity': 'HIGH'}]\",repo:README,fix,"
+                    "2024-01-01"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    retriever = IssueHistoryRetriever(dataset_path)
+
+    assert retriever.find_context(_issue()) is None
+
+
+def _issue() -> SonarIssue:
+    return SonarIssue(
+        key="issue-x",
+        rule="python:S1172",
+        severity="LOW",
+        message="Remove the unused function parameter kwargs",
+        location=IssueLocation(path="src/app.py", line=10),
+        issue_type="CODE_SMELL",
+        tags=("unused",),
+        clean_code_attribute="CLEAR",
+        clean_code_attribute_category="INTENTIONAL",
+    )

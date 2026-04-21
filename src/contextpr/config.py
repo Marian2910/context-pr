@@ -85,7 +85,10 @@ class Settings:
 
     @property
     def github_enabled(self) -> bool:
-        return bool(self.github_app_enabled and self.github_repository)
+        return bool(
+            (self.github_app_enabled or self.github_token_enabled)
+            and self.github_repository
+        )
 
     @property
     def github_app_enabled(self) -> bool:
@@ -94,6 +97,10 @@ class Settings:
             and self.github_installation_id
             and self.github_private_key
         )
+
+    @property
+    def github_token_enabled(self) -> bool:
+        return bool(self.github_token)
 
     @property
     def github_auth_mode(self) -> str:

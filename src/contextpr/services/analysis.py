@@ -57,10 +57,12 @@ class SonarAnalysisClient(Protocol):
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
         ...
 
+
 class IssueEnrichmentClient(Protocol):
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
         ...
+
 
 class AnalysisService:
 
@@ -129,11 +131,32 @@ class AnalysisService:
         if line is None or line not in changed_lines:
             return None
 
+        start_line = AnalysisService._comment_start_line(issue, changed_lines)
+        end_line = (
+            issue.location.end_line
+            if start_line is not None and issue.location.end_line is not None
+            else line
+        )
         return GitHubReviewComment(
             path=issue.location.path,
-            line=line,
+            line=end_line,
             body=AnalysisService._build_comment_body(issue, enrichment),
+            start_line=start_line,
+            start_side="RIGHT" if start_line is not None else None,
         )
+
+    @staticmethod
+    def _comment_start_line(issue: SonarIssue, changed_lines: set[int]) -> int | None:
+        start_line = issue.location.line
+        end_line = issue.location.end_line
+        if start_line is None or end_line is None or end_line <= start_line:
+            return None
+
+        issue_lines = set(range(start_line, end_line + 1))
+        if issue_lines.issubset(changed_lines):
+            return start_line
+
+        return None
 
     @staticmethod
     def _build_comment_body(

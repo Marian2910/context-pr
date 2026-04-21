@@ -43,7 +43,7 @@ def main(
         ),
     ] = None,
 ) -> None:
-    """Initialize the command line interface."""
+    ...
 
 
 @app.command()

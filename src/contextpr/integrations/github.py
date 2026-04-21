@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
@@ -30,19 +31,9 @@ class GitHubClient:
         return self._settings.github_enabled
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        self._settings.require("github_repository")
-        self._auth.require_configured()
-
-        request = Request(
-            url=self._api_url(f"/repos/{pull_request.repository}/pulls/{pull_request.number}/files"),
-            headers=self._headers(),
+        payload = self._get_json_list(
+            f"/repos/{pull_request.repository}/pulls/{pull_request.number}/files"
         )
-
-        with urlopen(request) as response:
-            payload = json.load(response)
-
-        if not isinstance(payload, list):
-            return []
 
         files: list[PullRequestFile] = []
         for item in payload:
@@ -67,21 +58,9 @@ class GitHubClient:
         self,
         pull_request: PullRequestRef,
     ) -> list[ExistingReviewComment]:
-        self._settings.require("github_repository")
-        self._auth.require_configured()
-
-        request = Request(
-            url=self._api_url(
-                f"/repos/{pull_request.repository}/pulls/{pull_request.number}/comments"
-            ),
-            headers=self._headers(),
+        payload = self._get_json_list(
+            f"/repos/{pull_request.repository}/pulls/{pull_request.number}/comments"
         )
-
-        with urlopen(request) as response:
-            payload = json.load(response)
-
-        if not isinstance(payload, list):
-            return []
 
         comments: list[ExistingReviewComment] = []
         for item in payload:
@@ -119,50 +98,63 @@ class GitHubClient:
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
     ) -> None:
-        self._settings.require("github_repository")
-        self._auth.require_configured()
-
-        body = json.dumps(
-            {
-                "event": "COMMENT",
-                "comments": [
-                    {
-                        "path": comment.path,
-                        "line": comment.line,
-                        "side": comment.side,
-                        "body": comment.body,
-                    }
-                    for comment in comments
-                ],
-            }
-        ).encode("utf-8")
-        request = Request(
-            url=self._api_url(f"/repos/{pull_request.repository}/pulls/{pull_request.number}/reviews"),
-            headers=self._headers(),
-            data=body,
+        self._send_json(
+            path=f"/repos/{pull_request.repository}/pulls/{pull_request.number}/reviews",
             method="POST",
+            payload={
+                "event": "COMMENT",
+                "comments": [self._review_comment_payload(comment) for comment in comments],
+            },
         )
 
-        with urlopen(request):
-            return None
-
     def delete_review_comment(self, comment_id: int) -> None:
-        self._settings.require("github_repository")
-        self._auth.require_configured()
-
-        request = Request(
-            url=self._api_url(f"/repos/{self._settings.github_repository}/pulls/comments/{comment_id}"),
-            headers=self._headers(),
+        self._send_json(
+            path=f"/repos/{self._settings.github_repository}/pulls/comments/{comment_id}",
             method="DELETE",
         )
 
-        with urlopen(request):
-            return None
-
     def get_authenticated_user_login(self) -> str:
+        self._require_configured()
+        return self._auth.get_actor_login()
+
+    def _require_configured(self) -> None:
         self._settings.require("github_repository")
         self._auth.require_configured()
-        return self._auth.get_actor_login()
+
+    def _get_json_list(self, path: str) -> list[Any]:
+        payload = self._get_json(path)
+        return payload if isinstance(payload, list) else []
+
+    def _get_json(self, path: str) -> object:
+        self._require_configured()
+        with urlopen(self._request(path)) as response:
+            return json.load(response)
+
+    def _send_json(
+        self,
+        *,
+        path: str,
+        method: str,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        self._require_configured()
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        with urlopen(self._request(path, method=method, data=body)):
+            return None
+
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str | None = None,
+        data: bytes | None = None,
+    ) -> Request:
+        return Request(
+            url=self._api_url(path),
+            headers=self._headers(),
+            data=data,
+            method=method,
+        )
 
     def _api_url(self, path: str) -> str:
         base_url = self._settings.github_api_url.rstrip("/") + "/"
@@ -176,3 +168,16 @@ class GitHubClient:
             "Content-Type": "application/json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    @staticmethod
+    def _review_comment_payload(comment: GitHubReviewComment) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "path": comment.path,
+            "line": comment.line,
+            "side": comment.side,
+            "body": comment.body,
+        }
+        if comment.start_line is not None:
+            payload["start_line"] = comment.start_line
+            payload["start_side"] = comment.start_side or comment.side
+        return payload

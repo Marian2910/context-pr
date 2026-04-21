@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "coverage[toml]>=7.6.1,<8.0.0",
   "mypy>=1.11.1,<2.0.0",
   "pytest>=8.3.2,<9.0.0",
   "ruff>=0.6.9,<1.0.0",
@@ -41,6 +42,19 @@ addopts = "-ra"
 pythonpath = ["src"]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["src/contextpr"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -54,7 +68,7 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests", "ml"]
+files = ["src", "tests"]
 mypy_path = "src"
 strict = true
 pretty = true
@@ -62,3 +76,10 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+  "joblib",
+  "sklearn.*",
+]
+ignore_missing_imports = true

@@ -84,7 +84,7 @@ class FakeSonarClient:
                 rule="python:S100",
                 severity="MAJOR",
                 message="First issue",
-                location=IssueLocation(path="src/app.py", line=11),
+                location=IssueLocation(path="src/app.py", line=11, end_line=12),
             ),
             SonarIssue(
                 key="issue-2",
@@ -152,6 +152,8 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     review_pull_request, comments = github_client.created_reviews[0]
     assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
     assert len(comments) == 1
+    assert comments[0].start_line == 11
+    assert comments[0].line == 12
     assert "Sonar reported a `MAJOR` issue (`python:S100`):" in comments[0].body
     assert "First issue" in comments[0].body
     assert any(option in comments[0].body for option in EXPLANATION_OPTIONS)
@@ -179,3 +181,42 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     assert result.posted_comments == 0
     assert github_client.created_reviews == []
     assert github_client.deleted_comment_ids == []
+
+
+def test_issue_to_comment_falls_back_to_single_line_when_range_is_not_fully_added() -> None:
+    comment = AnalysisService._issue_to_comment(
+        SonarIssue(
+            key="issue-range",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Repeated branches",
+            location=IssueLocation(path="src/app.py", line=11, end_line=13),
+        ),
+        changed_lines={11, 12},
+        enrichment=None,
+    )
+
+    assert comment is not None
+    assert comment.start_line is None
+    assert comment.line == 11
+
+
+def test_extract_added_lines_handles_multiple_hunks_and_deletions() -> None:
+    patch = (
+        "@@ -1,3 +1,4 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n"
+        " same\n"
+        "+extra\n"
+        "@@ -10,2 +20,3 @@\n"
+        "+later\n"
+        " unchanged\n"
+    )
+
+    assert AnalysisService._extract_added_lines(patch) == {2, 4, 20}
+
+
+def test_extract_added_lines_returns_empty_set_for_invalid_patch() -> None:
+    assert AnalysisService._extract_added_lines(None) == set()
+    assert AnalysisService._extract_added_lines("not a hunk") == set()
