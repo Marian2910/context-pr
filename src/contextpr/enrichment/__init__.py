@@ -1,5 +1,6 @@
 from contextpr.enrichment.history import HistoricalContext, IssueHistoryRetriever
 from contextpr.enrichment.intent import IntentClassifier, IntentPrediction
+from contextpr.enrichment.llm import LLMVerbalizerSettings, LightweightLLMGuidanceVerbalizer
 from contextpr.enrichment.nlp import (
     DeveloperGuidance,
     GuidanceLevel,
@@ -16,4 +17,6 @@ __all__ = [
     "IssueEnricher",
     "IssueEnrichment",
     "IssueHistoryRetriever",
+    "LLMVerbalizerSettings",
+    "LightweightLLMGuidanceVerbalizer",
 ]

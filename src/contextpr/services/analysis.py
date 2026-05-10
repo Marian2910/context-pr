@@ -163,28 +163,38 @@ class AnalysisService:
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
     ) -> str:
-        sections = [
-            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
-            issue.message,
-        ]
-        if enrichment is not None:
-            sections.extend(AnalysisService._enrichment_blocks(enrichment))
-
-        sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
-        return "\n\n".join(sections)
+        comment_text = (
+            AnalysisService._reviewer_note(issue, enrichment)
+            if enrichment is not None
+            else issue.message
+        )
+        return f"{comment_text}\n\n{COMMENT_MARKER_PREFIX}{issue.key} -->"
 
     @staticmethod
-    def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
-        return [
-            block
-            for block in (
-                enrichment.guidance.summary,
-                enrichment.guidance.explanation,
-                enrichment.guidance.next_step,
-                enrichment.guidance.evidence_note,
+    def _reviewer_note(
+        issue: SonarIssue,
+        enrichment: IssueEnrichment,
+    ) -> str:
+        guidance = enrichment.guidance
+        if guidance.level.value == "minimal":
+            parts = [issue.message]
+            if guidance.evidence_note is not None:
+                parts.append(guidance.evidence_note)
+            return " ".join(parts)
+
+        first_sentence = guidance.explanation or issue.message
+        second_sentence_parts = [
+            part
+            for part in (
+                guidance.next_step,
+                guidance.evidence_note,
             )
-            if block is not None
+            if part is not None
         ]
+        if not second_sentence_parts:
+            return first_sentence
+
+        return f"{first_sentence} {' '.join(second_sentence_parts)}"
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()

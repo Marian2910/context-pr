@@ -15,18 +15,6 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
-EXPLANATION_OPTIONS = (
-    "This looks like a cleanup issue rather than a functional change.",
-    "This seems more like code cleanup than a behavior fix.",
-    "This warning points more toward simplification than a change in behavior.",
-    "This looks like something to clean up rather than a functional defect.",
-)
-
-EVIDENCE_OPTIONS = (
-    "Historical note: in a small set of similar cases, developers leaned toward routine cleanup.",
-)
-
-
 class FakeGitHubClient:
 
     def __init__(self) -> None:
@@ -107,25 +95,26 @@ class FakeIssueEnricher:
         return IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.DETAILED,
-                summary=(
-                    "Sonar flagged this because all branches of the condition appear "
-                    "to do the same thing."
-                ),
-                explanation="This looks like a cleanup issue rather than a functional change.",
+                explanation="This is probably safe to simplify if the current structure is not intentional.",
                 next_step=(
-                    "A good next step is to simplify the condition or remove duplicated "
-                    "branches if they are truly equivalent."
+                    "Before simplifying the conditional, verify that the repeated "
+                    "branches are not intentionally preserving behavior or readability."
                 ),
                 evidence_note=(
-                    "Historical note: in a small set of similar cases, "
-                    "developers leaned toward routine cleanup."
+                    "In a small set of similar cases, developers leaned toward "
+                    "small refactors."
                 ),
             ),
             intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
             historical_context=HistoricalContext(
                 sample_size=6,
-                label_distribution=(("refactor", 4), ("fix", 2)),
                 same_rule_matches=3,
+                same_scope_matches=6,
+                same_path_family_matches=6,
+                strong_match_count=4,
+                dominant_maintenance="cleanup",
+                dominant_maintenance_share=0.6667,
+                maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
             ),
         )
 
@@ -153,12 +142,10 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert len(comments) == 1
     assert comments[0].start_line == 11
     assert comments[0].line == 12
-    assert "Sonar reported a `MAJOR` issue (`python:S100`):" in comments[0].body
-    assert "First issue" in comments[0].body
-    assert any(option in comments[0].body for option in EXPLANATION_OPTIONS)
-    assert any(option in comments[0].body for option in EVIDENCE_OPTIONS)
-    assert "Likely remediation intent" not in comments[0].body
-    assert "Historical pattern:" not in comments[0].body
+    assert "Sonar reported" not in comments[0].body
+    assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
+    assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
+    assert "In a small set of similar cases, developers leaned toward small refactors." in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 

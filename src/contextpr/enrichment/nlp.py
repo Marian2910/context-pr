@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from contextpr.enrichment.history import HistoricalContext, IssueHistoryRetriever
+from contextpr.enrichment.history import (
+    DISPOSITION_LABELS,
+    MAINTENANCE_LABELS,
+    HistoricalContext,
+    IssueHistoryRetriever,
+)
 from contextpr.enrichment.intent import IntentPrediction
+from contextpr.enrichment.llm import GuidanceVerbalizer
 from contextpr.models import SonarIssue
 
 VariantOptions = tuple[str, str, str, str]
 
 MIN_HISTORY_SAMPLE_SIZE = 5
-MIN_HISTORY_LABEL_SHARE = 0.5
+MIN_HISTORY_SHARE = 0.5
 MIN_STRONG_HISTORY_MATCHES = 2
 
 PATTERN_BY_RULE = {
@@ -21,6 +26,7 @@ PATTERN_BY_RULE = {
     "python:S1481": "unused_local_variable",
     "python:S1192": "duplicated_literal",
     "python:S1186": "empty_function",
+    "python:S1515": "loop_variable_capture",
 }
 
 TRIVIAL_PATTERNS = {
@@ -31,14 +37,8 @@ TRIVIAL_PATTERNS = {
 }
 
 DETAILED_PATTERNS = {
-    "duplicate_condition_branches",
     "behavior_risk",
-}
-
-BUCKET_LABELS = {
-    "cleanup": "routine cleanup",
-    "behavior": "behavior-oriented fixes",
-    "supporting": "supporting updates",
+    "loop_variable_capture",
 }
 
 
@@ -49,198 +49,88 @@ class GuidanceLevel(StrEnum):
     DETAILED = "detailed"
 
 
-SUMMARY_BY_PATTERN: dict[str, str] = {
-    "duplicate_condition_branches": (
-        "Sonar flagged this because all branches of the condition appear to do "
-        "the same thing."
-    ),
-    "unused_function_parameter": (
-        "Sonar flagged this because a function parameter appears to be unused."
-    ),
-    "unused_local_variable": (
-        "Sonar flagged this because a local variable appears to be unused."
-    ),
-    "duplicated_literal": (
-        "Sonar flagged this because the same literal is repeated in multiple "
-        "places."
-    ),
-    "empty_function": "Sonar flagged this because a function body appears to be empty.",
-    "behavior_risk": "Sonar flagged this because the code may not behave as intended.",
-    "cleanup_candidate": (
-        "Sonar flagged this because the code could be simplified or clarified."
-    ),
-    "general_review": "Sonar flagged this code for review.",
-}
-
 EXPLANATION_OPTIONS: dict[str, VariantOptions] = {
-    "behavior": (
-        "This looks more like a behavior issue than a simple cleanup.",
-        "This warning suggests the code may need a logic change, not just a tidy-up.",
-        "This reads more like a correctness concern than a stylistic cleanup.",
-        (
-            "This is probably worth treating as logic-related work rather than "
-            "routine cleanup."
-        ),
+    "loop_variable_capture": (
+        "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here.",
+        "Bind `prefix` at lambda creation time so this closure does not pick up a later loop value.",
+        "This lambda should capture the current `prefix` value explicitly, or a later loop iteration may change what it reads.",
+        "Make the lambda bind the current `prefix` value instead of relying on the loop variable after it changes.",
     ),
-    "supporting": (
-        (
-            "This looks like a small follow-up around the flagged code rather "
-            "than a large logic change."
-        ),
-        (
-            "This seems more like supporting work around the flagged code than "
-            "a direct behavior change."
-        ),
-        (
-            "This warning usually leads to a light follow-up rather than a "
-            "deeper logic rewrite."
-        ),
-        (
-            "This looks like a nearby follow-up task more than a core behavior "
-            "fix."
-        ),
+    "behavior": (
+        "Treat this as behavior-sensitive: changing it may alter how the code runs.",
+        "This change is worth reviewing carefully because it can affect runtime behavior.",
+        "Handle this as a logic concern, not as a mechanical rewrite.",
+        "Check the intended behavior before simplifying this code path.",
     ),
     "correctness": (
-        "This is worth checking carefully because it may affect behavior.",
-        "This deserves a closer look because it could change how the code behaves.",
-        (
-            "This warning is worth reviewing carefully in case it affects "
-            "runtime behavior."
-        ),
-        (
-            "This is the kind of issue that is worth validating against the "
-            "intended behavior."
-        ),
+        "This may affect runtime behavior, so verify the intended outcome before editing it.",
+        "Review this path carefully before changing it because the current behavior may be intentional.",
+        "Validate the expected behavior here before rewriting the code around it.",
+        "Check what behavior this code is preserving before you refactor it.",
     ),
     "cleanup": (
-        "This looks like a cleanup issue rather than a functional change.",
-        "This seems more like code cleanup than a behavior fix.",
-        "This warning points more toward simplification than a change in behavior.",
-        "This looks like something to clean up rather than a functional defect.",
+        "This is probably safe to simplify if the current structure is not intentional.",
+        "This looks like code that can be simplified without changing the intended behavior.",
+        "The main value here is to make the code easier to read and maintain.",
+        "This is a good candidate for a small refactor if there is no hidden intent in the current structure.",
     ),
 }
 
 NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
     "duplicate_condition_branches": (
-        (
-            "A good next step is to simplify the condition or remove duplicated "
-            "branches if they are truly equivalent."
-        ),
-        (
-            "Consider collapsing the conditional if all branches are effectively "
-            "doing the same work."
-        ),
-        (
-            "Try simplifying the control flow so each branch has a distinct "
-            "outcome, or remove the condition entirely."
-        ),
-        (
-            "A useful next step is to rewrite or remove the conditional so it "
-            "no longer repeats the same behavior."
-        ),
+        "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability.",
+        "Check whether the duplicated branches are intentional before collapsing the conditional.",
+        "Verify that the identical branches are not documenting an intentional distinction before removing the duplication.",
+        "Review whether the repeated branches are deliberately kept separate before simplifying the control flow.",
+    ),
+    "loop_variable_capture": (
+        "Pass `prefix` into the lambda as a default argument, or wrap the lambda in a helper that binds the current value.",
+        "Add `prefix` as a default argument to the parent lambda so each iteration keeps its own value.",
+        "Bind `prefix` explicitly in the lambda signature instead of reading the loop variable after it changes.",
+        "Capture the current `prefix` value through a default argument or helper function before the next iteration runs.",
     ),
     "unused_function_parameter": (
-        (
-            "A good next step is to remove the unused parameter or rename it in "
-            "a way that makes the intent explicit if the signature must stay as-is."
-        ),
-        (
-            "Consider removing the parameter, or marking it clearly as "
-            "intentional if the signature cannot change."
-        ),
-        (
-            "A useful next step is to drop the parameter or make its unused role "
-            "explicit in the signature."
-        ),
-        (
-            "Try removing the unused parameter unless the interface requires it "
-            "to remain in place."
-        ),
+        "A good next step is to remove the unused parameter or rename it in a way that makes the intent explicit if the signature must stay as-is.",
+        "Consider removing the parameter, or marking it clearly as intentional if the signature cannot change.",
+        "A useful next step is to drop the parameter or make its unused role explicit in the signature.",
+        "Try removing the unused parameter unless the interface requires it to remain in place.",
     ),
     "unused_local_variable": (
-        (
-            "A good next step is to remove the variable or replace it with `_` "
-            "if it is intentional."
-        ),
-        (
-            "Consider deleting the variable, or rename it to `_` if it is "
-            "intentionally unused."
-        ),
-        (
-            "A useful next step is to remove the unused variable unless it is "
-            "there only as an intentional placeholder."
-        ),
-        (
-            "Try removing the variable, or make the intent explicit with `_` if "
-            "it must remain unused."
-        ),
+        "A good next step is to remove the variable or replace it with `_` if it is intentional.",
+        "Consider deleting the variable, or rename it to `_` if it is intentionally unused.",
+        "A useful next step is to remove the unused variable unless it is there only as an intentional placeholder.",
+        "Try removing the variable, or make the intent explicit with `_` if it must remain unused.",
     ),
     "duplicated_literal": (
         "A good next step is to extract the repeated literal into a named constant.",
-        (
-            "Consider replacing the repeated literal with a constant so the "
-            "intent is clearer in one place."
-        ),
-        (
-            "A useful next step is to centralize the repeated literal behind a "
-            "constant or shared name."
-        ),
-        (
-            "Try extracting the duplicated literal so the code has a single "
-            "source of truth for it."
-        ),
+        "Consider replacing the repeated literal with a constant so the intent is clearer in one place.",
+        "A useful next step is to centralize the repeated literal behind a constant or shared name.",
+        "Try extracting the duplicated literal so the code has a single source of truth for it.",
     ),
     "empty_function": (
-        (
-            "A good next step is to document why the function is intentionally "
-            "empty or complete the implementation."
-        ),
-        (
-            "Consider adding a clear explanation for the empty function body, or "
-            "filling in the missing behavior."
-        ),
-        (
-            "A useful next step is to either justify the empty body in code or "
-            "complete the implementation."
-        ),
-        (
-            "Try making the empty function intentional and explicit, or "
-            "implement the missing logic."
-        ),
+        "A good next step is to document why the function is intentionally empty or complete the implementation.",
+        "Consider adding a clear explanation for the empty function body, or filling in the missing behavior.",
+        "A useful next step is to either justify the empty body in code or complete the implementation.",
+        "Try making the empty function intentional and explicit, or implement the missing logic.",
     ),
     "behavior_risk": (
-        "A good next step is to verify the logic around the flagged code path.",
-        (
-            "Consider checking the surrounding logic to confirm the current "
-            "behavior is really intended."
-        ),
-        (
-            "A useful next step is to validate the code path and confirm it "
-            "behaves as expected."
-        ),
-        (
-            "Try reviewing the flagged logic path against the expected behavior "
-            "before changing it."
-        ),
+        "Verify the surrounding logic before changing the flagged code path.",
+        "Check the surrounding logic to confirm the current behavior is really intended.",
+        "Validate the code path against the expected behavior before changing it.",
+        "Review the flagged logic path against the expected behavior before editing it.",
     ),
     "general_review": (
         "A good next step is to simplify or clarify the flagged code where possible.",
-        (
-            "Consider simplifying the flagged code so the intent is easier to "
-            "read directly."
-        ),
+        "Consider simplifying the flagged code so the intent is easier to read directly.",
         "A useful next step is to make the flagged code clearer and easier to follow.",
-        (
-            "Try simplifying the flagged code so the intent is more obvious at a "
-            "glance."
-        ),
+        "Try simplifying the flagged code so the intent is more obvious at a glance.",
     ),
 }
+
 
 @dataclass(frozen=True, slots=True)
 class DeveloperGuidance:
     level: GuidanceLevel
-    summary: str | None = None
     explanation: str | None = None
     next_step: str | None = None
     evidence_note: str | None = None
@@ -254,16 +144,24 @@ class IssueEnrichment:
 
 
 class IssueEnricher:
-
-    def __init__(self, model_path: Path, dataset_path: Path) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        dataset_path: Path,
+        guidance_verbalizer: GuidanceVerbalizer | None = None,
+    ) -> None:
         self._model_path = model_path
         self._history_retriever = IssueHistoryRetriever(dataset_path)
+        self._guidance_verbalizer = guidance_verbalizer
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
         historical_context = self._history_retriever.find_context(issue)
         guidance = self._build_guidance(issue, historical_context)
         if guidance is None:
             return None
+
+        if self._guidance_verbalizer is not None and guidance.level is not GuidanceLevel.MINIMAL:
+            guidance = self._guidance_verbalizer.rewrite(issue, guidance, historical_context)
 
         return IssueEnrichment(
             guidance=guidance,
@@ -281,15 +179,10 @@ class IssueEnricher:
         if guidance_level is GuidanceLevel.NONE:
             return None
 
-        evidence_note = self._build_evidence_note(issue, historical_context)
+        evidence_note = self._build_evidence_note(historical_context)
         if guidance_level is GuidanceLevel.MINIMAL:
             return DeveloperGuidance(level=guidance_level, evidence_note=evidence_note)
 
-        summary = (
-            self._build_summary(issue_pattern)
-            if guidance_level is GuidanceLevel.DETAILED
-            else None
-        )
         explanation = self._build_explanation(issue, historical_context)
         next_step = (
             self._build_next_step(issue_pattern)
@@ -299,14 +192,10 @@ class IssueEnricher:
 
         return DeveloperGuidance(
             level=guidance_level,
-            summary=summary,
             explanation=explanation,
             next_step=next_step,
             evidence_note=evidence_note,
         )
-
-    def _build_summary(self, issue_pattern: str) -> str:
-        return SUMMARY_BY_PATTERN.get(issue_pattern, SUMMARY_BY_PATTERN["general_review"])
 
     def _issue_pattern(self, issue: SonarIssue) -> str:
         if issue.rule in PATTERN_BY_RULE:
@@ -339,6 +228,13 @@ class IssueEnricher:
         if issue_pattern in TRIVIAL_PATTERNS:
             return GuidanceLevel.MINIMAL if has_grounded_history else GuidanceLevel.NONE
 
+        if issue_pattern == "duplicate_condition_branches":
+            return (
+                GuidanceLevel.DETAILED
+                if self._needs_duplicate_condition_context(historical_context)
+                else GuidanceLevel.NONE
+            )
+
         if issue_pattern in DETAILED_PATTERNS or issue.issue_type == "BUG":
             return GuidanceLevel.DETAILED
 
@@ -352,9 +248,17 @@ class IssueEnricher:
         issue: SonarIssue,
         historical_context: HistoricalContext | None,
     ) -> str:
+        issue_pattern = self._issue_pattern(issue)
+        if issue_pattern in EXPLANATION_OPTIONS:
+            return self._pick_required_option(
+                issue,
+                "explanation",
+                EXPLANATION_OPTIONS[issue_pattern],
+            )
+
         issue_kind = self._issue_kind(issue)
-        change_kind = self._change_kind(historical_context, issue_kind)
-        option_key = change_kind if change_kind != "cleanup" else issue_kind
+        utility_kind = self._utility_kind(historical_context, issue_kind)
+        option_key = utility_kind if utility_kind != "cleanup" else issue_kind
         if option_key not in EXPLANATION_OPTIONS:
             option_key = "cleanup"
         return self._pick_required_option(
@@ -373,17 +277,15 @@ class IssueEnricher:
 
     def _build_evidence_note(
         self,
-        issue: SonarIssue,
         historical_context: HistoricalContext | None,
     ) -> str | None:
         if not self._has_grounded_history(historical_context):
             return None
 
-        change_kind = self._change_kind(
-            historical_context,
-            self._issue_kind(issue),
-        )
-        return self._history_note(historical_context, change_kind)
+        assert historical_context is not None
+        if historical_context.dominant_disposition is not None:
+            return self._history_note_from_disposition(historical_context)
+        return self._history_note_from_maintenance(historical_context)
 
     @staticmethod
     def _issue_kind(issue: SonarIssue) -> str:
@@ -396,16 +298,13 @@ class IssueEnricher:
         message = issue.message.lower()
         if issue.issue_type == "BUG":
             return "correctness"
-        if (
-            "unused" in message
-            or "duplicating this literal" in message
-        ):
+        if "unused" in message or "duplicating this literal" in message:
             return "cleanup"
         if issue.tags and any(tag in {"design", "unused", "suspicious"} for tag in issue.tags):
             return "cleanup"
         return "general"
 
-    def _change_kind(
+    def _utility_kind(
         self,
         historical_context: HistoricalContext | None,
         issue_kind: str,
@@ -414,87 +313,125 @@ class IssueEnricher:
             return "behavior"
         if issue_kind == "cleanup":
             return "cleanup"
-
-        label_scores = self._label_scores(historical_context)
-        if (
-            label_scores["behavior"] > label_scores["cleanup"]
-            and label_scores["behavior"] >= label_scores["supporting"]
-        ):
-            return "behavior"
-        if (
-            label_scores["supporting"] > label_scores["cleanup"]
-            and label_scores["supporting"] >= label_scores["behavior"]
-        ):
-            return "supporting"
-        return "cleanup"
+        if historical_context is None or historical_context.dominant_maintenance is None:
+            return "cleanup"
+        if historical_context.dominant_maintenance == "supporting":
+            return "cleanup"
+        return historical_context.dominant_maintenance
 
     @staticmethod
-    def _label_scores(
+    def _needs_duplicate_condition_context(
         historical_context: HistoricalContext | None,
-    ) -> dict[str, float]:
-        scores = {"cleanup": 0.0, "behavior": 0.0, "supporting": 0.0}
+    ) -> bool:
         if not IssueEnricher._has_grounded_history(historical_context):
-            return scores
+            return False
 
         assert historical_context is not None
-        for label, count in historical_context.label_distribution:
-            scores[IssueEnricher._bucket_for_label(label)] += (
-                count / historical_context.sample_size
+        if historical_context.dominant_disposition in {"accepted", "persistent"}:
+            return True
+        if historical_context.dominant_maintenance == "behavior":
+            return True
+
+        maintenance_distribution = historical_context.maintenance_distribution
+        if len(maintenance_distribution) < 2:
+            return False
+
+        top_label, top_count = maintenance_distribution[0]
+        second_label, second_count = maintenance_distribution[1]
+        if "behavior" not in {top_label, second_label}:
+            return False
+
+        sample_size = historical_context.sample_size
+        if sample_size <= 0:
+            return False
+
+        top_share = top_count / sample_size
+        second_share = second_count / sample_size
+        return second_share >= 0.3 and top_share - second_share <= 0.2
+
+    @staticmethod
+    def _history_note_from_disposition(historical_context: HistoricalContext) -> str | None:
+        distribution = historical_context.disposition_distribution
+        if not distribution:
+            return None
+
+        if IssueEnricher._is_split_distribution(
+            distribution,
+            sample_size=sum(count for _, count in distribution),
+        ):
+            first, second = distribution[:2]
+            return (
+                "Similar cases here were split between "
+                f"{DISPOSITION_LABELS[first[0]]} and {DISPOSITION_LABELS[second[0]]}."
             )
-        return scores
+
+        strength_phrase = IssueEnricher._history_strength_phrase(
+            sample_size=historical_context.sample_size,
+            same_rule_matches=historical_context.same_rule_matches,
+            dominant_share=historical_context.dominant_disposition_share,
+        )
+        label = DISPOSITION_LABELS[historical_context.dominant_disposition or "resolved"]
+        return f"{strength_phrase.capitalize()} {label}."
 
     @staticmethod
-    def _bucket_counts(historical_context: HistoricalContext) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        for label, count in historical_context.label_distribution:
-            counts[IssueEnricher._bucket_for_label(label)] += count
-        return counts
-
-    @staticmethod
-    def _history_note(
-        historical_context: HistoricalContext | None,
-        change_kind: str,
-    ) -> str | None:
-        if historical_context is None:
+    def _history_note_from_maintenance(historical_context: HistoricalContext) -> str | None:
+        distribution = historical_context.maintenance_distribution
+        if not distribution:
             return None
 
-        counts = IssueEnricher._bucket_counts(historical_context)
-        if not counts:
+        if (
+            historical_context.dominant_maintenance == "supporting"
+            and historical_context.dominant_disposition is None
+        ):
             return None
 
-        ranked = counts.most_common()
-        top_bucket, top_count = ranked[0]
-        top_share = top_count / historical_context.sample_size
-        if len(ranked) > 1:
-            second_bucket, second_count = ranked[1]
-            second_share = second_count / historical_context.sample_size
-            if second_share >= 0.3 and top_share - second_share <= 0.2:
-                return (
-                    "Historical note: similar cases were split between "
-                    f"{BUCKET_LABELS[top_bucket]} and {BUCKET_LABELS[second_bucket]}."
-                )
+        if IssueEnricher._is_split_distribution(
+            distribution,
+            sample_size=historical_context.sample_size,
+        ):
+            first, second = distribution[:2]
+            return (
+                "Similar cases here were split between "
+                f"{MAINTENANCE_LABELS[first[0]]} and {MAINTENANCE_LABELS[second[0]]}."
+            )
 
-        phrase = IssueEnricher._history_strength_phrase(historical_context)
-        bucket_label = BUCKET_LABELS.get(change_kind, BUCKET_LABELS[top_bucket])
-        return f"Historical note: {phrase} {bucket_label}."
+        strength_phrase = IssueEnricher._history_strength_phrase(
+            sample_size=historical_context.sample_size,
+            same_rule_matches=historical_context.same_rule_matches,
+            dominant_share=historical_context.dominant_maintenance_share,
+        )
+        label = MAINTENANCE_LABELS[
+            historical_context.dominant_maintenance or distribution[0][0]
+        ]
+        return f"{strength_phrase.capitalize()} {label}."
 
     @staticmethod
-    def _history_strength_phrase(historical_context: HistoricalContext) -> str:
-        if (
-            historical_context.sample_size >= 15
-            and historical_context.same_rule_matches >= 5
-            and historical_context.strongest_label_share >= 0.75
-        ):
-            return "similar cases were usually handled as"
-
-        if (
-            historical_context.sample_size >= 8
-            and historical_context.same_rule_matches >= 3
-            and historical_context.strongest_label_share >= 0.65
-        ):
-            return "similar cases were often handled as"
-
+    def _history_strength_phrase(
+        *,
+        sample_size: int,
+        same_rule_matches: int,
+        dominant_share: float,
+    ) -> str:
+        if sample_size >= 15 and same_rule_matches >= 5 and dominant_share >= 0.75:
+            return "similar cases here were usually"
+        if sample_size >= 8 and same_rule_matches >= 3 and dominant_share >= 0.65:
+            return "similar cases here were often"
         return "in a small set of similar cases, developers leaned toward"
+
+    @staticmethod
+    def _is_split_distribution(
+        distribution: tuple[tuple[str, int], ...],
+        *,
+        sample_size: int,
+    ) -> bool:
+        if len(distribution) < 2 or sample_size <= 0:
+            return False
+
+        top_count = distribution[0][1]
+        second_count = distribution[1][1]
+        top_share = top_count / sample_size
+        second_share = second_count / sample_size
+        return second_share >= 0.3 and top_share - second_share <= 0.2
 
     @staticmethod
     def _has_grounded_history(historical_context: HistoricalContext | None) -> bool:
@@ -505,50 +442,34 @@ class IssueEnricher:
             return False
 
         has_rule_support = historical_context.same_rule_matches > 0
-        has_label_consensus = historical_context.strongest_label_share >= MIN_HISTORY_LABEL_SHARE
+        has_local_support = (
+            historical_context.same_scope_matches > 0
+            or historical_context.same_path_family_matches > 0
+        )
+        has_consensus = (
+            historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
+            or historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
+        )
         has_strong_matches = historical_context.strong_match_count >= MIN_STRONG_HISTORY_MATCHES
-        return has_rule_support and has_label_consensus and has_strong_matches
+        return has_rule_support and has_local_support and has_consensus and has_strong_matches
 
     @staticmethod
-    def _bucket_for_label(label: str) -> str:
-        normalized = label.strip().lower()
-        if normalized in {"fix", "feat", "perf"}:
-            return "behavior"
-        if normalized in {"docs", "test", "build", "ci"}:
-            return "supporting"
-        return "cleanup"
-
-    @staticmethod
-    def _variant_index(issue: SonarIssue, scope: str) -> int:
-        token = f"{scope}:{issue.rule}:{issue.message}"
-        return sum(ord(char) for char in token) % 4
-
-    @staticmethod
-    def _variant_index_for_token(token: str, scope: str) -> int:
-        scoped_token = f"{scope}:{token}"
-        return sum(ord(char) for char in scoped_token) % 4
-
-    def _pick_option(
-        self,
-        issue_or_token: SonarIssue | str,
-        scope: str,
-        options: VariantOptions | None,
-    ) -> str | None:
-        if options is None:
-            return None
-
-        if isinstance(issue_or_token, SonarIssue):
-            variant = self._variant_index(issue_or_token, scope)
-        else:
-            variant = self._variant_index_for_token(issue_or_token, scope)
-
-        return options[variant]
-
     def _pick_required_option(
-        self,
-        issue_or_token: SonarIssue | str,
-        scope: str,
+        subject: SonarIssue | str,
+        salt: str,
         options: VariantOptions,
     ) -> str:
-        selected = self._pick_option(issue_or_token, scope, options)
-        return selected or options[0]
+        if isinstance(subject, SonarIssue):
+            key = "|".join(
+                (
+                    subject.rule,
+                    subject.message,
+                    subject.location.path,
+                    salt,
+                )
+            )
+        else:
+            key = f"{subject}|{salt}"
+
+        index = sum(ord(char) for char in key) % len(options)
+        return options[index]
