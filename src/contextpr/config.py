@@ -17,6 +17,7 @@ DEFAULT_INTENT_MODEL_PATH = Path("artifacts/intent_classifier.joblib")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 
 
 class ConfigurationError(ValueError):
@@ -38,6 +39,10 @@ class Settings:
     sonar_project_key: str | None = None
     intent_model_path: Path = DEFAULT_INTENT_MODEL_PATH
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
+    llm_api_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
@@ -77,6 +82,14 @@ class Settings:
                 "CONTEXTPR_ISSUE_DATASET_PATH",
                 default=DEFAULT_ISSUE_DATASET_PATH,
             ),
+            llm_api_url=_read_optional(env, "CONTEXTPR_LLM_API_URL"),
+            llm_api_key=_read_optional(env, "CONTEXTPR_LLM_API_KEY"),
+            llm_model=_read_optional(env, "CONTEXTPR_LLM_MODEL"),
+            llm_timeout_seconds=_read_float(
+                env,
+                "CONTEXTPR_LLM_TIMEOUT_SECONDS",
+                default=DEFAULT_LLM_TIMEOUT_SECONDS,
+            ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
                 or DEFAULT_LOG_LEVEL
@@ -114,6 +127,10 @@ class Settings:
     @property
     def sonar_enabled(self) -> bool:
         return bool(self.sonar_token and self.sonar_project_key)
+
+    @property
+    def llm_enabled(self) -> bool:
+        return bool(self.llm_api_url and self.llm_api_key and self.llm_model)
 
     def require(self, *field_names: str) -> None:
         missing = [field_name for field_name in field_names if not getattr(self, field_name)]
@@ -161,3 +178,16 @@ def _read_path(
         return default
 
     return Path(value)
+
+
+def _read_float(
+    environ: Mapping[str, str],
+    key: str,
+    *,
+    default: float,
+) -> float:
+    value = _read_optional(environ, key)
+    if value is None:
+        return default
+
+    return float(value)
