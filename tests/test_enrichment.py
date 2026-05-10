@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
+from urllib import error
 
 import pytest
 
 from contextpr.enrichment import (
+    DeveloperGuidance,
     GuidanceLevel,
+    HistoricalContext,
     IssueEnricher,
     IssueHistoryRetriever,
     LLMVerbalizerSettings,
@@ -888,6 +891,262 @@ def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
         "Similar cases here were split between behavior-sensitive changes "
         "and nearby follow-up changes."
     )
+
+
+def test_lightweight_llm_verbalizer_skips_empty_rewrite_targets() -> None:
+    verbalizer = LightweightLLMGuidanceVerbalizer(
+        LLMVerbalizerSettings(
+            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            api_key="secret",
+            model="gemini-flash-latest",
+        )
+    )
+    guidance = DeveloperGuidance(
+        level=GuidanceLevel.DETAILED,
+        next_step="Check the surrounding logic first.",
+    )
+
+    rewritten = verbalizer.rewrite(
+        _issue(),
+        guidance,
+        historical_context=None,
+    )
+
+    assert rewritten == guidance
+
+
+def test_lightweight_llm_verbalizer_falls_back_when_request_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verbalizer = LightweightLLMGuidanceVerbalizer(
+        LLMVerbalizerSettings(
+            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            api_key="secret",
+            model="gemini-flash-latest",
+        )
+    )
+    guidance = DeveloperGuidance(
+        level=GuidanceLevel.DETAILED,
+        explanation="Check whether the branch difference is intentional.",
+        evidence_note="Similar cases here were often small refactors.",
+    )
+
+    def fail_urlopen(*_args: object, **_kwargs: object) -> object:
+        raise error.URLError("network timeout")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+
+    rewritten = verbalizer.rewrite(
+        _issue(),
+        guidance,
+        historical_context=None,
+    )
+
+    assert rewritten == guidance
+
+
+def test_lightweight_llm_verbalizer_supports_openai_compatible_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verbalizer = LightweightLLMGuidanceVerbalizer(
+        LLMVerbalizerSettings(
+            api_url="https://llm.example/v1/chat/completions/",
+            api_key="secret",
+            model="gpt-4o-mini",
+        )
+    )
+    captured_request: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return (
+                b'{"choices":[{"message":{"content":"{\\"explanation\\":\\"Review the branch behavior first.\\"}"}}]}'
+            )
+
+    def fake_urlopen(http_request: object, **_kwargs: object) -> FakeResponse:
+        captured_request["url"] = getattr(http_request, "full_url")
+        captured_request["headers"] = dict(getattr(http_request, "headers"))
+        captured_request["body"] = getattr(http_request, "data")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    guidance = DeveloperGuidance(
+        level=GuidanceLevel.DETAILED,
+        explanation="Check whether the branch difference is intentional.",
+        evidence_note=None,
+    )
+    rewritten = verbalizer.rewrite(
+        SonarIssue(
+            key="openai-issue",
+            rule="python:S9999",
+            severity="CRITICAL",
+            message="Possible broken logic path",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="BUG",
+        ),
+        guidance,
+        historical_context=None,
+    )
+
+    assert rewritten.explanation == "Review the branch behavior first."
+    assert captured_request["url"] == "https://llm.example/v1/chat/completions"
+    headers = captured_request["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "Bearer secret"
+    assert headers["Content-type"] == "application/json"
+    request_body = captured_request["body"]
+    assert isinstance(request_body, bytes)
+    parsed_body = json.loads(request_body.decode("utf-8"))
+    assert parsed_body["model"] == "gpt-4o-mini"
+    assert parsed_body["messages"][0]["role"] == "system"
+
+
+def test_lightweight_llm_verbalizer_helper_branches() -> None:
+    verbalizer = LightweightLLMGuidanceVerbalizer(
+        LLMVerbalizerSettings(
+            api_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="secret",
+            model="gemini-flash-latest",
+        )
+    )
+
+    persistent_history = HistoricalContext(
+        sample_size=6,
+        same_rule_matches=3,
+        same_scope_matches=6,
+        same_path_family_matches=6,
+        strong_match_count=4,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=0.6667,
+        maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+        dominant_disposition="persistent",
+        dominant_disposition_share=0.6667,
+        disposition_distribution=(("persistent", 4), ("resolved", 2)),
+    )
+    assert (
+        verbalizer._review_goal(
+            SonarIssue(
+                key="issue-persistent",
+                rule="python:S9999",
+                severity="MAJOR",
+                message="Potential issue",
+                location=IssueLocation(path="src/app.py", line=10),
+                issue_type="CODE_SMELL",
+            ),
+            DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                explanation="Check whether the branch difference is intentional.",
+            ),
+            persistent_history,
+        )
+        == "Help the reviewer decide whether this warning should be addressed now or safely deferred."
+    )
+    assert verbalizer._request_url() == (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+    )
+    assert verbalizer._extract_json_object("no json here") is None
+    assert verbalizer._response_preview("x " * 200).endswith("...")
+    with pytest.raises(TypeError, match="Expected text content"):
+        verbalizer._parse_json_text({"not": "text"})
+    with pytest.raises(json.JSONDecodeError):
+        verbalizer._parse_json_text("no json here")
+    assert (
+        verbalizer._pick_rewrite(
+            {"explanation": "   "},
+            "explanation",
+            "Check whether the branch difference is intentional.",
+        )
+        == "Check whether the branch difference is intentional."
+    )
+    assert (
+        verbalizer._pick_rewrite(
+            {"explanation": "Sonar says to simplify the conditional."},
+            "explanation",
+            "Check whether the branch difference is intentional.",
+        )
+        == "Check whether the branch difference is intentional."
+    )
+    assert (
+        verbalizer._pick_rewrite(
+            {"evidence_note": "Similar cases required cleanup."},
+            "evidence_note",
+            "Similar cases here were often small refactors.",
+        )
+        == "Similar cases here were often small refactors."
+    )
+
+
+def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
+    enricher = IssueEnricher(
+        model_path=tmp_path / "missing.joblib",
+        dataset_path=tmp_path / "missing.csv",
+    )
+
+    assert enricher._issue_pattern(
+        SonarIssue(
+            key="dup-literal",
+            rule="python:S1",
+            severity="MINOR",
+            message='Define a constant instead of duplicating this literal "x".',
+            location=IssueLocation(path="src/app.py", line=10),
+            issue_type="CODE_SMELL",
+        )
+    ) == "duplicated_literal"
+    assert enricher._issue_kind(
+        SonarIssue(
+            key="bug-kind",
+            rule="python:S2",
+            severity="MAJOR",
+            message="Potential wrong behavior",
+            location=IssueLocation(path="src/app.py", line=10),
+            issue_type="BUG",
+        )
+    ) == "correctness"
+    assert enricher._utility_kind(None, "general") == "cleanup"
+    assert enricher._utility_kind(
+        HistoricalContext(
+            sample_size=6,
+            same_rule_matches=3,
+            same_scope_matches=6,
+            same_path_family_matches=6,
+            strong_match_count=4,
+            dominant_maintenance="supporting",
+            dominant_maintenance_share=0.6667,
+            maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
+        ),
+        "general",
+    ) == "cleanup"
+    assert IssueEnricher._history_note_from_maintenance(
+        HistoricalContext(
+            sample_size=6,
+            same_rule_matches=3,
+            same_scope_matches=6,
+            same_path_family_matches=6,
+            strong_match_count=4,
+            dominant_maintenance="supporting",
+            dominant_maintenance_share=0.6667,
+            maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
+        )
+    ) is None
+    assert (
+        IssueEnricher._history_strength_phrase(
+            sample_size=8,
+            same_rule_matches=3,
+            dominant_share=0.65,
+        )
+        == "similar cases here were often"
+    )
+    assert IssueEnricher._is_split_distribution(
+        (("cleanup", 1), ("behavior", 1)),
+        sample_size=0,
+    ) is False
 
 
 def test_issue_enricher_adds_direct_guidance_for_loop_variable_capture(

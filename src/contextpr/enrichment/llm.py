@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 HEDGING_MARKERS = ("usually", "often", "split", "small set", "leaned toward")
 BANNED_CERTAINTY_MARKERS = ("always", "definitely", "clearly", "proves", "guarantees")
+JSON_MIME_TYPE = "application/json"
 
 
 class GuidanceVerbalizer(Protocol):
@@ -173,7 +174,7 @@ class LightweightLLMGuidanceVerbalizer:
             "generationConfig": {
                 "temperature": 0.2,
                 "maxOutputTokens": 160,
-                "responseMimeType": "application/json",
+                "responseMimeType": JSON_MIME_TYPE,
             },
         }
 
@@ -259,13 +260,13 @@ class LightweightLLMGuidanceVerbalizer:
     def _request_headers(self) -> dict[str, str]:
         if self._is_gemini_api():
             return {
-                "Content-Type": "application/json",
+                "Content-Type": JSON_MIME_TYPE,
                 "X-goog-api-key": self._settings.api_key,
             }
 
         return {
             "Authorization": f"Bearer {self._settings.api_key}",
-            "Content-Type": "application/json",
+            "Content-Type": JSON_MIME_TYPE,
         }
 
     def _parse_response_payload(self, parsed: dict[str, object]) -> dict[str, object]:

@@ -280,11 +280,4 @@ class IssueHistoryRetriever:
 
     @staticmethod
     def _message_overlap(left: str, right: str) -> float:
-        left_tokens = set(IssueHistoryRetriever._tokens(left))
-        right_tokens = set(IssueHistoryRetriever._tokens(right))
-        if not left_tokens or not right_tokens:
-            return 0.0
-
-        intersection = len(left_tokens & right_tokens)
-        union = len(left_tokens | right_tokens)
-        return intersection / union
+        return IssueHistoryRetriever._token_overlap(left, right)

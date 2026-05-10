@@ -206,3 +206,61 @@ def test_extract_added_lines_handles_multiple_hunks_and_deletions() -> None:
 def test_extract_added_lines_returns_empty_set_for_invalid_patch() -> None:
     assert AnalysisService._extract_added_lines(None) == set()
     assert AnalysisService._extract_added_lines("not a hunk") == set()
+
+
+def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
+    minimal_note = AnalysisService._reviewer_note(
+        SonarIssue(
+            key="issue-minimal",
+            rule="python:S1481",
+            severity="MINOR",
+            message='Remove the unused local variable "name".',
+            location=IssueLocation(path="src/app.py", line=11),
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.MINIMAL,
+                evidence_note="Similar cases here were often small refactors.",
+            ),
+            intent_prediction=None,
+            historical_context=None,
+        ),
+    )
+    single_sentence_note = AnalysisService._reviewer_note(
+        SonarIssue(
+            key="issue-detailed",
+            rule="python:S1515",
+            severity="MAJOR",
+            message="Loop variable capture",
+            location=IssueLocation(path="src/app.py", line=20),
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
+                explanation="Capture `prefix` when the lambda is created.",
+            ),
+            intent_prediction=None,
+            historical_context=None,
+        ),
+    )
+
+    assert minimal_note == (
+        'Remove the unused local variable "name". '
+        "Similar cases here were often small refactors."
+    )
+    assert single_sentence_note == "Capture `prefix` when the lambda is created."
+
+
+def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:
+    assert AnalysisService._comment_start_line(
+        SonarIssue(
+            key="issue-range-none",
+            rule="python:S100",
+            severity="MAJOR",
+            message="Invalid range",
+            location=IssueLocation(path="src/app.py", line=10, end_line=10),
+        ),
+        changed_lines={10},
+    ) is None
+    assert AnalysisService._parse_hunk_new_start("@@ invalid @@") is None
+    assert AnalysisService._parse_hunk_new_start("@@ -1,2 -3,4 @@") is None
