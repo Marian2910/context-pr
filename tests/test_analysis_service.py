@@ -2,7 +2,6 @@ from contextpr.enrichment import (
     DeveloperGuidance,
     GuidanceLevel,
     HistoricalContext,
-    IntentPrediction,
     IssueEnrichment,
 )
 from contextpr.models import (
@@ -15,10 +14,9 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
-class FakeGitHubClient:
 
+class FakeGitHubClient:
     def __init__(self) -> None:
-        """Initialize the fake client state."""
         self.created_reviews: list[tuple[PullRequestRef, list[GitHubReviewComment]]] = []
         self.deleted_comment_ids: list[int] = []
 
@@ -62,7 +60,6 @@ class FakeGitHubClient:
 
 
 class FakeSonarClient:
-
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
         return [
             SonarIssue(
@@ -90,7 +87,6 @@ class FakeSonarClient:
 
 
 class FakeIssueEnricher:
-
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
         return IssueEnrichment(
             guidance=DeveloperGuidance(
@@ -101,11 +97,10 @@ class FakeIssueEnricher:
                     "branches are not intentionally preserving behavior or readability."
                 ),
                 evidence_note=(
-                    "In a small set of similar cases, developers leaned toward "
+                    "Historically similar cases usually disappeared during later "
                     "small refactors."
                 ),
             ),
-            intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
             historical_context=HistoricalContext(
                 sample_size=6,
                 same_rule_matches=3,
@@ -145,7 +140,7 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert "Sonar reported" not in comments[0].body
     assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
     assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
-    assert "In a small set of similar cases, developers leaned toward small refactors." in comments[0].body
+    assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -220,9 +215,8 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
         IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.MINIMAL,
-                evidence_note="Similar cases here were often small refactors.",
+                evidence_note="Historically similar cases usually disappeared during later small refactors.",
             ),
-            intent_prediction=None,
             historical_context=None,
         ),
     )
@@ -239,14 +233,13 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
                 level=GuidanceLevel.DETAILED,
                 explanation="Capture `prefix` when the lambda is created.",
             ),
-            intent_prediction=None,
             historical_context=None,
         ),
     )
 
     assert minimal_note == (
         'Remove the unused local variable "name". '
-        "Similar cases here were often small refactors."
+        "Historically similar cases usually disappeared during later small refactors."
     )
     assert single_sentence_note == "Capture `prefix` when the lambda is created."
 

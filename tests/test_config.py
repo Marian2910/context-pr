@@ -30,7 +30,6 @@ def test_settings_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch
     assert settings.github_repository == "octo/example"
     assert settings.github_enabled is True
     assert settings.sonar_enabled is True
-    assert str(settings.intent_model_path) == "artifacts/intent_classifier.joblib"
     assert str(settings.issue_dataset_path) == "dataset/curated_issues_data.xlsx"
     assert settings.llm_enabled is False
     assert settings.log_level == "DEBUG"

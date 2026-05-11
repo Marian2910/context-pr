@@ -15,28 +15,6 @@ from contextpr.enrichment import (
 )
 from contextpr.models import IssueLocation, SonarIssue
 
-EXPLANATION_OPTIONS = (
-    "This is probably safe to simplify if the current structure is not intentional.",
-    "This looks like code that can be simplified without changing the intended behavior.",
-    "The main value here is to make the code easier to read and maintain.",
-    "This is a good candidate for a small refactor if there is no hidden intent in the current structure.",
-)
-
-NEXT_STEP_OPTIONS = (
-    (
-        "Before simplifying the conditional, verify that the repeated branches "
-        "are not intentionally preserving behavior or readability."
-    ),
-    "Check whether the duplicated branches are intentional before collapsing the conditional.",
-    (
-        "Verify that the identical branches are not documenting an intentional "
-        "distinction before removing the duplication."
-    ),
-    (
-        "Review whether the repeated branches are deliberately kept separate "
-        "before simplifying the control flow."
-    ),
-)
 
 def test_history_retriever_summarizes_similar_issues(tmp_path: Path) -> None:
     dataset_path = tmp_path / "issues.csv"
@@ -88,6 +66,8 @@ def test_history_retriever_summarizes_similar_issues(tmp_path: Path) -> None:
     assert context.same_rule_matches == 2
     assert context.same_scope_matches == 3
     assert context.same_path_family_matches == 3
+    assert context.same_exact_path_matches == 3
+    assert context.same_path_family_share == 1.0
     assert context.maintenance_distribution[0] == ("cleanup", 2)
     assert context.dominant_maintenance == "cleanup"
     assert context.dominant_maintenance_share == 0.6667
@@ -116,10 +96,7 @@ def test_issue_enricher_skips_trivial_issue_without_grounded_history(
         encoding="utf-8",
     )
 
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
     enrichment = enricher.enrich(
         SonarIssue(
             key="issue-2",
@@ -184,10 +161,7 @@ def test_issue_enricher_skips_duplicate_condition_when_sonar_is_self_explanatory
         encoding="utf-8",
     )
 
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
     enrichment = enricher.enrich(
         SonarIssue(
             key="issue-3",
@@ -255,10 +229,7 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
         encoding="utf-8",
     )
 
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
     enrichment = enricher.enrich(
         SonarIssue(
             key="issue-3b",
@@ -278,10 +249,10 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
 
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert enrichment.guidance.next_step in NEXT_STEP_OPTIONS
+    assert "preserving behavior" in (enrichment.guidance.next_step or "")
     assert enrichment.guidance.evidence_note == (
-        "Similar cases here were split between behavior-sensitive changes "
-        "and small refactors."
+        "Retrieved historical matches clustered around the same file path and were split between "
+        "behavior-sensitive changes and small refactors."
     )
 
 
@@ -371,10 +342,7 @@ def test_issue_enricher_omits_history_note_for_weak_historical_context(
         for index in range(1, 6)
     )
     dataset_path.write_text("\n".join(rows), encoding="utf-8")
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
 
     enrichment = enricher.enrich(_issue())
 
@@ -401,10 +369,7 @@ def test_issue_enricher_uses_minimal_history_note_for_trivial_issue(
         for index in range(1, 6)
     )
     dataset_path.write_text("\n".join(rows), encoding="utf-8")
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
 
     enrichment = enricher.enrich(_issue())
 
@@ -413,8 +378,8 @@ def test_issue_enricher_uses_minimal_history_note_for_trivial_issue(
     assert enrichment.guidance.explanation is None
     assert enrichment.guidance.next_step is None
     assert enrichment.guidance.evidence_note == (
-        "In a small set of similar cases, developers leaned toward "
-        "small refactors."
+        "Retrieved historical matches clustered around the same file path and usually disappeared "
+        "during later small refactors."
     )
 
 
@@ -449,7 +414,6 @@ def test_issue_enricher_skips_llm_for_minimal_guidance(
 
     verbalizer = CountingVerbalizer()
     enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
         dataset_path=dataset_path,
         guidance_verbalizer=verbalizer,
     )
@@ -462,10 +426,7 @@ def test_issue_enricher_skips_llm_for_minimal_guidance(
 
 
 def test_issue_enricher_uses_rule_id_before_message_text(tmp_path: Path) -> None:
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=tmp_path / "missing.csv",
-    )
+    enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv")
 
     enrichment = enricher.enrich(
         SonarIssue(
@@ -502,16 +463,14 @@ def test_issue_enricher_uses_confidence_aware_history_wording(
         for index in range(1, 16)
     )
     dataset_path.write_text("\n".join(rows), encoding="utf-8")
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
 
     enrichment = enricher.enrich(_issue())
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Similar cases here were usually small refactors."
+        "Retrieved historical matches clustered around the same file path and usually disappeared "
+        "during later small refactors."
     )
 
 
@@ -543,10 +502,7 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
         for index in range(4, 6)
     )
     dataset_path.write_text("\n".join(rows), encoding="utf-8")
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
 
     enrichment = enricher.enrich(
         SonarIssue(
@@ -562,45 +518,9 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Similar cases here were split between behavior-sensitive changes "
-        "and small refactors."
+        "Retrieved historical matches clustered around the same file path and were split between "
+        "behavior-sensitive changes and small refactors."
     )
-
-
-def test_issue_enricher_does_not_load_optional_intent_model(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_path = tmp_path / "model.joblib"
-    model_path.write_text("placeholder", encoding="utf-8")
-
-    def fail_if_loaded(_path: Path) -> object:
-        raise AssertionError("Intent model should not be loaded by IssueEnricher")
-
-    monkeypatch.setattr(
-        "contextpr.enrichment.intent.joblib.load",
-        fail_if_loaded,
-    )
-    enricher = IssueEnricher(
-        model_path=model_path,
-        dataset_path=tmp_path / "missing.csv",
-    )
-
-    enrichment = enricher.enrich(
-        SonarIssue(
-            key="issue-generic",
-            rule="python:S100",
-            severity="MINOR",
-            message="Possible null pointer dereference",
-            location=IssueLocation(path="src/app.py", line=10),
-            issue_type="BUG",
-        )
-    )
-
-    assert enrichment is not None
-    assert enrichment.intent_prediction is None
-    assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert enrichment.guidance.explanation not in EXPLANATION_OPTIONS
 
 
 def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Path) -> None:
@@ -642,16 +562,13 @@ def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=dataset_path,
-    )
+    enricher = IssueEnricher(dataset_path=dataset_path)
 
     enrichment = enricher.enrich(_issue())
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "In a small set of similar cases, developers leaned toward "
+        "Retrieved historical matches clustered around the same file path and usually ended up "
         "resolved in code."
     )
 
@@ -693,7 +610,6 @@ def test_lightweight_llm_verbalizer_rewrites_existing_guidance(
     )
 
     enrichment = IssueEnricher(
-        model_path=Path("missing.joblib"),
         dataset_path=Path("missing.csv"),
         guidance_verbalizer=verbalizer,
     ).enrich(
@@ -736,10 +652,6 @@ def test_lightweight_llm_verbalizer_rewrites_existing_guidance(
         "Review the flagged logic path against the expected behavior before editing it.",
     )
     assert request_facts["rewrite_targets"]["explanation"] in (
-        "Treat this as behavior-sensitive: changing it may alter how the code runs.",
-        "This change is worth reviewing carefully because it can affect runtime behavior.",
-        "Handle this as a logic concern, not as a mechanical rewrite.",
-        "Check the intended behavior before simplifying this code path.",
         "This may affect runtime behavior, so verify the intended outcome before editing it.",
         "Review this path carefully before changing it because the current behavior may be intentional.",
         "Validate the expected behavior here before rewriting the code around it.",
@@ -777,7 +689,6 @@ def test_lightweight_llm_verbalizer_recovers_json_wrapped_in_text(
     )
 
     enrichment = IssueEnricher(
-        model_path=Path("missing.joblib"),
         dataset_path=Path("missing.csv"),
         guidance_verbalizer=verbalizer,
     ).enrich(
@@ -871,7 +782,6 @@ def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
     )
 
     enrichment = IssueEnricher(
-        model_path=Path("missing.joblib"),
         dataset_path=dataset_path,
         guidance_verbalizer=verbalizer,
     ).enrich(
@@ -888,8 +798,8 @@ def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Similar cases here were split between behavior-sensitive changes "
-        "and nearby follow-up changes."
+        "Retrieved historical matches clustered around the same file path and were split between "
+        "behavior-sensitive changes and nearby follow-up changes."
     )
 
 
@@ -928,7 +838,7 @@ def test_lightweight_llm_verbalizer_falls_back_when_request_fails(
     guidance = DeveloperGuidance(
         level=GuidanceLevel.DETAILED,
         explanation="Check whether the branch difference is intentional.",
-        evidence_note="Similar cases here were often small refactors.",
+        evidence_note="Historically similar cases usually disappeared during later small refactors.",
     )
 
     def fail_urlopen(*_args: object, **_kwargs: object) -> object:
@@ -1046,7 +956,10 @@ def test_lightweight_llm_verbalizer_helper_branches() -> None:
             ),
             persistent_history,
         )
-        == "Help the reviewer decide whether this warning should be addressed now or safely deferred."
+        == (
+            "Help the reviewer judge whether this debt tends to linger in this area "
+            "and whether it is worth paying down now."
+        )
     )
     assert verbalizer._request_url() == (
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
@@ -1077,17 +990,14 @@ def test_lightweight_llm_verbalizer_helper_branches() -> None:
         verbalizer._pick_rewrite(
             {"evidence_note": "Similar cases required cleanup."},
             "evidence_note",
-            "Similar cases here were often small refactors.",
+            "Historically similar cases usually disappeared during later small refactors.",
         )
-        == "Similar cases here were often small refactors."
+        == "Historically similar cases usually disappeared during later small refactors."
     )
 
 
 def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=tmp_path / "missing.csv",
-    )
+    enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv")
 
     assert enricher._issue_pattern(
         SonarIssue(
@@ -1099,18 +1009,33 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             issue_type="CODE_SMELL",
         )
     ) == "duplicated_literal"
-    assert enricher._issue_kind(
-        SonarIssue(
-            key="bug-kind",
-            rule="python:S2",
-            severity="MAJOR",
-            message="Potential wrong behavior",
-            location=IssueLocation(path="src/app.py", line=10),
-            issue_type="BUG",
+    assert enricher._maintainability_focus(
+        HistoricalContext(
+            sample_size=6,
+            same_rule_matches=3,
+            same_scope_matches=6,
+            same_path_family_matches=6,
+            strong_match_count=4,
+            dominant_maintenance="behavior",
+            dominant_maintenance_share=0.6667,
+            maintenance_distribution=(("behavior", 4), ("cleanup", 2)),
         )
-    ) == "correctness"
-    assert enricher._utility_kind(None, "general") == "cleanup"
-    assert enricher._utility_kind(
+    ) == "behavior_sensitive"
+    assert enricher._has_actionable_history(
+        HistoricalContext(
+            sample_size=6,
+            same_rule_matches=3,
+            same_scope_matches=6,
+            same_path_family_matches=6,
+            strong_match_count=4,
+            dominant_maintenance="cleanup",
+            dominant_maintenance_share=0.6667,
+            maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+            same_exact_path_matches=2,
+            same_path_family_share=1.0,
+        )
+    ) is True
+    assert enricher._maintainability_focus(
         HistoricalContext(
             sample_size=6,
             same_rule_matches=3,
@@ -1120,10 +1045,10 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             dominant_maintenance="supporting",
             dominant_maintenance_share=0.6667,
             maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
-        ),
-        "general",
-    ) == "cleanup"
-    assert IssueEnricher._history_note_from_maintenance(
+            same_path_family_share=1.0,
+        )
+    ) == "accumulating_hotspot"
+    assert enricher._build_maintainability_evidence_note(
         HistoricalContext(
             sample_size=6,
             same_rule_matches=3,
@@ -1135,14 +1060,6 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
         )
     ) is None
-    assert (
-        IssueEnricher._history_strength_phrase(
-            sample_size=8,
-            same_rule_matches=3,
-            dominant_share=0.65,
-        )
-        == "similar cases here were often"
-    )
     assert IssueEnricher._is_split_distribution(
         (("cleanup", 1), ("behavior", 1)),
         sample_size=0,
@@ -1152,10 +1069,7 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
 def test_issue_enricher_adds_direct_guidance_for_loop_variable_capture(
     tmp_path: Path,
 ) -> None:
-    enricher = IssueEnricher(
-        model_path=tmp_path / "missing.joblib",
-        dataset_path=tmp_path / "missing.csv",
-    )
+    enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv")
 
     enrichment = enricher.enrich(
         SonarIssue(

@@ -7,8 +7,11 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
-from contextpr.enrichment import IssueEnricher
-from contextpr.enrichment.llm import LLMVerbalizerSettings, LightweightLLMGuidanceVerbalizer
+from contextpr.enrichment import (
+    IssueEnricher,
+    LLMVerbalizerSettings,
+    LightweightLLMGuidanceVerbalizer,
+)
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -86,13 +89,25 @@ def analyze(
         repository=settings.github_repository or "",
         number=pr_number,
     )
+    verbalizer = None
+    if settings.llm_enabled:
+        assert settings.llm_api_url is not None
+        assert settings.llm_api_key is not None
+        assert settings.llm_model is not None
+        verbalizer = LightweightLLMGuidanceVerbalizer(
+            LLMVerbalizerSettings(
+                api_url=settings.llm_api_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                timeout_seconds=settings.llm_timeout_seconds,
+            )
+        )
     service = AnalysisService(
         github_client=GitHubClient(settings),
         sonar_client=SonarQubeClient(settings),
         issue_enricher=IssueEnricher(
-            model_path=settings.intent_model_path,
             dataset_path=settings.issue_dataset_path,
-            guidance_verbalizer=_build_guidance_verbalizer(settings),
+            guidance_verbalizer=verbalizer,
         ),
     )
 
@@ -112,19 +127,3 @@ def analyze(
 
 def run() -> None:
     app()
-
-
-def _build_guidance_verbalizer(
-    settings: Settings,
-) -> LightweightLLMGuidanceVerbalizer | None:
-    if not settings.llm_enabled:
-        return None
-
-    return LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url=settings.llm_api_url or "",
-            api_key=settings.llm_api_key or "",
-            model=settings.llm_model or "",
-            timeout_seconds=settings.llm_timeout_seconds,
-        )
-    )

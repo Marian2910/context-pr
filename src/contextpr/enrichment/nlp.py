@@ -10,7 +10,6 @@ from contextpr.enrichment.history import (
     HistoricalContext,
     IssueHistoryRetriever,
 )
-from contextpr.enrichment.intent import IntentPrediction
 from contextpr.enrichment.llm import GuidanceVerbalizer
 from contextpr.models import SonarIssue
 
@@ -19,6 +18,9 @@ VariantOptions = tuple[str, str, str, str]
 MIN_HISTORY_SAMPLE_SIZE = 5
 MIN_HISTORY_SHARE = 0.5
 MIN_STRONG_HISTORY_MATCHES = 2
+HOTSPOT_FILE_MATCHES = 2
+HOTSPOT_MODULE_MATCHES = 3
+HOTSPOT_MODULE_SHARE = 0.5
 
 PATTERN_BY_RULE = {
     "python:S3923": "duplicate_condition_branches",
@@ -56,33 +58,15 @@ EXPLANATION_OPTIONS: dict[str, VariantOptions] = {
         "This lambda should capture the current `prefix` value explicitly, or a later loop iteration may change what it reads.",
         "Make the lambda bind the current `prefix` value instead of relying on the loop variable after it changes.",
     ),
-    "behavior": (
-        "Treat this as behavior-sensitive: changing it may alter how the code runs.",
-        "This change is worth reviewing carefully because it can affect runtime behavior.",
-        "Handle this as a logic concern, not as a mechanical rewrite.",
-        "Check the intended behavior before simplifying this code path.",
-    ),
     "correctness": (
         "This may affect runtime behavior, so verify the intended outcome before editing it.",
         "Review this path carefully before changing it because the current behavior may be intentional.",
         "Validate the expected behavior here before rewriting the code around it.",
         "Check what behavior this code is preserving before you refactor it.",
     ),
-    "cleanup": (
-        "This is probably safe to simplify if the current structure is not intentional.",
-        "This looks like code that can be simplified without changing the intended behavior.",
-        "The main value here is to make the code easier to read and maintain.",
-        "This is a good candidate for a small refactor if there is no hidden intent in the current structure.",
-    ),
 }
 
 NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
-    "duplicate_condition_branches": (
-        "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability.",
-        "Check whether the duplicated branches are intentional before collapsing the conditional.",
-        "Verify that the identical branches are not documenting an intentional distinction before removing the duplication.",
-        "Review whether the repeated branches are deliberately kept separate before simplifying the control flow.",
-    ),
     "loop_variable_capture": (
         "Pass `prefix` into the lambda as a default argument, or wrap the lambda in a helper that binds the current value.",
         "Add `prefix` as a default argument to the parent lambda so each iteration keeps its own value.",
@@ -119,12 +103,6 @@ NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
         "Validate the code path against the expected behavior before changing it.",
         "Review the flagged logic path against the expected behavior before editing it.",
     ),
-    "general_review": (
-        "A good next step is to simplify or clarify the flagged code where possible.",
-        "Consider simplifying the flagged code so the intent is easier to read directly.",
-        "A useful next step is to make the flagged code clearer and easier to follow.",
-        "Try simplifying the flagged code so the intent is more obvious at a glance.",
-    ),
 }
 
 
@@ -139,18 +117,15 @@ class DeveloperGuidance:
 @dataclass(frozen=True, slots=True)
 class IssueEnrichment:
     guidance: DeveloperGuidance
-    intent_prediction: IntentPrediction | None
     historical_context: HistoricalContext | None
 
 
 class IssueEnricher:
     def __init__(
         self,
-        model_path: Path,
         dataset_path: Path,
         guidance_verbalizer: GuidanceVerbalizer | None = None,
     ) -> None:
-        self._model_path = model_path
         self._history_retriever = IssueHistoryRetriever(dataset_path)
         self._guidance_verbalizer = guidance_verbalizer
 
@@ -165,7 +140,6 @@ class IssueEnricher:
 
         return IssueEnrichment(
             guidance=guidance,
-            intent_prediction=None,
             historical_context=historical_context,
         )
 
@@ -185,7 +159,7 @@ class IssueEnricher:
 
         explanation = self._build_explanation(issue, historical_context)
         next_step = (
-            self._build_next_step(issue_pattern)
+            self._build_next_step(issue, issue_pattern, historical_context)
             if guidance_level is GuidanceLevel.DETAILED
             else None
         )
@@ -224,9 +198,9 @@ class IssueEnricher:
         issue_pattern: str,
         historical_context: HistoricalContext | None,
     ) -> GuidanceLevel:
-        has_grounded_history = self._has_grounded_history(historical_context)
+        has_actionable_history = self._has_actionable_history(historical_context)
         if issue_pattern in TRIVIAL_PATTERNS:
-            return GuidanceLevel.MINIMAL if has_grounded_history else GuidanceLevel.NONE
+            return GuidanceLevel.MINIMAL if has_actionable_history else GuidanceLevel.NONE
 
         if issue_pattern == "duplicate_condition_branches":
             return (
@@ -238,7 +212,10 @@ class IssueEnricher:
         if issue_pattern in DETAILED_PATTERNS or issue.issue_type == "BUG":
             return GuidanceLevel.DETAILED
 
-        if has_grounded_history:
+        if issue.issue_type == "CODE_SMELL":
+            return GuidanceLevel.DETAILED if has_actionable_history else GuidanceLevel.NONE
+
+        if self._has_grounded_history(historical_context):
             return GuidanceLevel.CONTEXTUAL
 
         return GuidanceLevel.NONE
@@ -249,81 +226,61 @@ class IssueEnricher:
         historical_context: HistoricalContext | None,
     ) -> str:
         issue_pattern = self._issue_pattern(issue)
-        if issue_pattern in EXPLANATION_OPTIONS:
+        if issue_pattern == "loop_variable_capture":
             return self._pick_required_option(
                 issue,
                 "explanation",
                 EXPLANATION_OPTIONS[issue_pattern],
             )
 
-        issue_kind = self._issue_kind(issue)
-        utility_kind = self._utility_kind(historical_context, issue_kind)
-        option_key = utility_kind if utility_kind != "cleanup" else issue_kind
-        if option_key not in EXPLANATION_OPTIONS:
-            option_key = "cleanup"
-        return self._pick_required_option(
-            issue,
-            "explanation",
-            EXPLANATION_OPTIONS[option_key],
-        )
+        if issue.issue_type == "BUG":
+            return self._pick_required_option(
+                issue,
+                "explanation",
+                EXPLANATION_OPTIONS["correctness"],
+            )
 
-    def _build_next_step(self, issue_pattern: str) -> str:
-        option_key = issue_pattern if issue_pattern != "cleanup_candidate" else "general_review"
-        return self._pick_required_option(
-            option_key,
-            "next_step",
-            NEXT_STEP_OPTIONS[option_key],
-        )
+        assert historical_context is not None
+        return self._build_maintainability_explanation(historical_context)
+
+    def _build_next_step(
+        self,
+        issue: SonarIssue,
+        issue_pattern: str,
+        historical_context: HistoricalContext | None,
+    ) -> str:
+        if issue_pattern == "loop_variable_capture":
+            return self._pick_required_option(
+                issue_pattern,
+                "next_step",
+                NEXT_STEP_OPTIONS[issue_pattern],
+            )
+
+        if issue.issue_type == "BUG":
+            return self._pick_required_option(
+                "behavior_risk",
+                "next_step",
+                NEXT_STEP_OPTIONS["behavior_risk"],
+            )
+
+        assert historical_context is not None
+        return self._build_maintainability_next_step(historical_context)
 
     def _build_evidence_note(
         self,
         historical_context: HistoricalContext | None,
     ) -> str | None:
-        if not self._has_grounded_history(historical_context):
+        if not self._has_actionable_history(historical_context):
             return None
 
         assert historical_context is not None
-        if historical_context.dominant_disposition is not None:
-            return self._history_note_from_disposition(historical_context)
-        return self._history_note_from_maintenance(historical_context)
-
-    @staticmethod
-    def _issue_kind(issue: SonarIssue) -> str:
-        pattern = PATTERN_BY_RULE.get(issue.rule)
-        if pattern in TRIVIAL_PATTERNS:
-            return "cleanup"
-        if pattern == "duplicate_condition_branches":
-            return "general"
-
-        message = issue.message.lower()
-        if issue.issue_type == "BUG":
-            return "correctness"
-        if "unused" in message or "duplicating this literal" in message:
-            return "cleanup"
-        if issue.tags and any(tag in {"design", "unused", "suspicious"} for tag in issue.tags):
-            return "cleanup"
-        return "general"
-
-    def _utility_kind(
-        self,
-        historical_context: HistoricalContext | None,
-        issue_kind: str,
-    ) -> str:
-        if issue_kind == "correctness":
-            return "behavior"
-        if issue_kind == "cleanup":
-            return "cleanup"
-        if historical_context is None or historical_context.dominant_maintenance is None:
-            return "cleanup"
-        if historical_context.dominant_maintenance == "supporting":
-            return "cleanup"
-        return historical_context.dominant_maintenance
+        return self._build_maintainability_evidence_note(historical_context)
 
     @staticmethod
     def _needs_duplicate_condition_context(
         historical_context: HistoricalContext | None,
     ) -> bool:
-        if not IssueEnricher._has_grounded_history(historical_context):
+        if not IssueEnricher._has_actionable_history(historical_context):
             return False
 
         assert historical_context is not None
@@ -349,74 +306,176 @@ class IssueEnricher:
         second_share = second_count / sample_size
         return second_share >= 0.3 and top_share - second_share <= 0.2
 
+    def _build_maintainability_explanation(
+        self,
+        historical_context: HistoricalContext,
+    ) -> str:
+        location_subject = self._location_subject(historical_context)
+        focus = self._maintainability_focus(historical_context)
+        if focus == "behavior_sensitive":
+            return (
+                f"Historically similar cleanup in {location_subject} was often tied to "
+                "behavior-sensitive changes, so this is more than cosmetic maintenance."
+            )
+        if focus == "persistent_debt":
+            return (
+                f"Historically similar smells in {location_subject} were often left open, "
+                "which suggests this kind of debt can accumulate over time."
+            )
+        if focus == "later_refactor":
+            return (
+                f"Historically similar smells in {location_subject} were usually cleaned up during later refactors, "
+                "which suggests the cost often gets pushed into future work."
+            )
+        if focus == "accumulating_hotspot":
+            return (
+                f"Similar smells have recurred in {location_subject}, "
+                "so this looks more like recurring maintenance debt than a one-off cleanup."
+            )
+        return (
+            f"Historically similar cases in {location_subject} needed cleanup more than once, "
+            "so this is worth treating as recurring maintenance work while the code is already open."
+        )
+
+    def _build_maintainability_next_step(
+        self,
+        historical_context: HistoricalContext,
+    ) -> str:
+        focus = self._maintainability_focus(historical_context)
+        if focus == "behavior_sensitive":
+            return (
+                "If you clean it up now, verify that the current structure is not preserving "
+                "behavior that earlier changes intentionally kept in place."
+            )
+        if focus == "persistent_debt":
+            return (
+                "If you're already touching this code, paying the debt down now is likely "
+                "better than carrying it into another maintenance pass."
+            )
+        if focus == "later_refactor":
+            return (
+                "If this code is already open, fixing it now may save a later refactor pass on similar code."
+            )
+        if focus == "accumulating_hotspot":
+            return (
+                "Use this touchpoint to remove or narrow the smell before it turns into another cleanup pass."
+            )
+        return (
+            "Consider addressing it in the current change or leaving an explicit note, "
+            "because historically similar smells have tended to come back as follow-up maintenance."
+        )
+
+    def _build_maintainability_evidence_note(
+        self,
+        historical_context: HistoricalContext,
+    ) -> str | None:
+        location_clause = self._evidence_location_clause(historical_context)
+        pattern_clause = self._evidence_pattern_clause(historical_context)
+        if location_clause and pattern_clause:
+            return f"{location_clause} and {pattern_clause}."
+        if location_clause:
+            return f"{location_clause}."
+        if pattern_clause:
+            return f"Historically similar cases {pattern_clause}."
+        return None
+
     @staticmethod
-    def _history_note_from_disposition(historical_context: HistoricalContext) -> str | None:
-        distribution = historical_context.disposition_distribution
-        if not distribution:
+    def _evidence_location_clause(historical_context: HistoricalContext) -> str | None:
+        if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
+            return "Retrieved historical matches clustered around the same file path"
+        if (
+            historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+        ):
+            return "Retrieved historical matches clustered around similar module paths"
+        return None
+
+    @staticmethod
+    def _evidence_pattern_clause(historical_context: HistoricalContext) -> str | None:
+        disposition_distribution = historical_context.disposition_distribution
+        if disposition_distribution:
+            if IssueEnricher._is_split_distribution(
+                disposition_distribution,
+                sample_size=sum(count for _, count in disposition_distribution),
+            ):
+                first, second = disposition_distribution[:2]
+                return (
+                    f"were split between {DISPOSITION_LABELS[first[0]]} "
+                    f"and {DISPOSITION_LABELS[second[0]]}"
+                )
+            if (
+                historical_context.dominant_disposition is not None
+                and historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
+            ):
+                if historical_context.dominant_disposition == "persistent":
+                    return "were often left open or deferred"
+                if historical_context.dominant_disposition == "accepted":
+                    return "were often kept as accepted debt"
+                return "usually ended up resolved in code"
+
+        maintenance_distribution = historical_context.maintenance_distribution
+        if not maintenance_distribution:
             return None
 
         if IssueEnricher._is_split_distribution(
-            distribution,
-            sample_size=sum(count for _, count in distribution),
-        ):
-            first, second = distribution[:2]
-            return (
-                "Similar cases here were split between "
-                f"{DISPOSITION_LABELS[first[0]]} and {DISPOSITION_LABELS[second[0]]}."
-            )
-
-        strength_phrase = IssueEnricher._history_strength_phrase(
+            maintenance_distribution,
             sample_size=historical_context.sample_size,
-            same_rule_matches=historical_context.same_rule_matches,
-            dominant_share=historical_context.dominant_disposition_share,
-        )
-        label = DISPOSITION_LABELS[historical_context.dominant_disposition or "resolved"]
-        return f"{strength_phrase.capitalize()} {label}."
-
-    @staticmethod
-    def _history_note_from_maintenance(historical_context: HistoricalContext) -> str | None:
-        distribution = historical_context.maintenance_distribution
-        if not distribution:
-            return None
+        ):
+            first, second = maintenance_distribution[:2]
+            return (
+                f"were split between {MAINTENANCE_LABELS[first[0]]} "
+                f"and {MAINTENANCE_LABELS[second[0]]}"
+            )
 
         if (
-            historical_context.dominant_maintenance == "supporting"
-            and historical_context.dominant_disposition is None
+            historical_context.dominant_maintenance == "cleanup"
+            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
-            return None
-
-        if IssueEnricher._is_split_distribution(
-            distribution,
-            sample_size=historical_context.sample_size,
+            return "usually disappeared during later small refactors"
+        if (
+            historical_context.dominant_maintenance == "behavior"
+            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
-            first, second = distribution[:2]
-            return (
-                "Similar cases here were split between "
-                f"{MAINTENANCE_LABELS[first[0]]} and {MAINTENANCE_LABELS[second[0]]}."
-            )
-
-        strength_phrase = IssueEnricher._history_strength_phrase(
-            sample_size=historical_context.sample_size,
-            same_rule_matches=historical_context.same_rule_matches,
-            dominant_share=historical_context.dominant_maintenance_share,
-        )
-        label = MAINTENANCE_LABELS[
-            historical_context.dominant_maintenance or distribution[0][0]
-        ]
-        return f"{strength_phrase.capitalize()} {label}."
+            return "more often needed behavior-sensitive changes than quick cleanup"
+        return None
 
     @staticmethod
-    def _history_strength_phrase(
-        *,
-        sample_size: int,
-        same_rule_matches: int,
-        dominant_share: float,
-    ) -> str:
-        if sample_size >= 15 and same_rule_matches >= 5 and dominant_share >= 0.75:
-            return "similar cases here were usually"
-        if sample_size >= 8 and same_rule_matches >= 3 and dominant_share >= 0.65:
-            return "similar cases here were often"
-        return "in a small set of similar cases, developers leaned toward"
+    def _location_subject(historical_context: HistoricalContext) -> str:
+        if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
+            return "matching file paths"
+        if (
+            historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+        ):
+            return "similar module paths"
+        return "similar code areas"
+
+    @staticmethod
+    def _maintainability_focus(historical_context: HistoricalContext) -> str:
+        if (
+            historical_context.dominant_maintenance == "behavior"
+            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
+        ):
+            return "behavior_sensitive"
+        if (
+            historical_context.dominant_disposition in {"persistent", "accepted"}
+            and historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
+        ):
+            return "persistent_debt"
+        if (
+            historical_context.dominant_maintenance == "cleanup"
+            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
+        ):
+            return "later_refactor"
+        if (
+            historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES
+            or (
+                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+            )
+        ):
+            return "accumulating_hotspot"
+        return "recurring_maintenance"
 
     @staticmethod
     def _is_split_distribution(
@@ -452,6 +511,31 @@ class IssueEnricher:
         )
         has_strong_matches = historical_context.strong_match_count >= MIN_STRONG_HISTORY_MATCHES
         return has_rule_support and has_local_support and has_consensus and has_strong_matches
+
+    @staticmethod
+    def _has_actionable_history(historical_context: HistoricalContext | None) -> bool:
+        if not IssueEnricher._has_grounded_history(historical_context):
+            return False
+
+        assert historical_context is not None
+        if historical_context.dominant_disposition is not None:
+            return True
+        if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
+            return True
+        if (
+            historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+        ):
+            return True
+        if (
+            historical_context.dominant_maintenance in {"cleanup", "behavior"}
+            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
+        ):
+            return True
+        return IssueEnricher._is_split_distribution(
+            historical_context.maintenance_distribution,
+            sample_size=historical_context.sample_size,
+        )
 
     @staticmethod
     def _pick_required_option(
