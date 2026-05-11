@@ -90,7 +90,6 @@ def analyze(
         github_client=GitHubClient(settings),
         sonar_client=SonarQubeClient(settings),
         issue_enricher=IssueEnricher(
-            model_path=settings.intent_model_path,
             dataset_path=settings.issue_dataset_path,
             guidance_verbalizer=_build_guidance_verbalizer(settings),
         ),

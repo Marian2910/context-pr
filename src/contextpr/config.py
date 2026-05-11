@@ -13,7 +13,6 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
-DEFAULT_INTENT_MODEL_PATH = Path("artifacts/intent_classifier.joblib")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 DEFAULT_LOG_LEVEL = "INFO"
@@ -37,7 +36,6 @@ class Settings:
     sonar_host_url: str = DEFAULT_SONAR_HOST_URL
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
-    intent_model_path: Path = DEFAULT_INTENT_MODEL_PATH
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
     llm_api_url: str | None = None
     llm_api_key: str | None = None
@@ -72,11 +70,6 @@ class Settings:
             or DEFAULT_SONAR_HOST_URL,
             sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
             sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
-            intent_model_path=_read_path(
-                env,
-                "CONTEXTPR_INTENT_MODEL_PATH",
-                default=DEFAULT_INTENT_MODEL_PATH,
-            ),
             issue_dataset_path=_read_path(
                 env,
                 "CONTEXTPR_ISSUE_DATASET_PATH",

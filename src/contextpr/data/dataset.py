@@ -2,11 +2,67 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
+import pandas as pd
 
-def parse_tags(value: object) -> list[str]:
+TARGET_COLUMN = "ccs_classification"
+REQUIRED_COLUMNS = (
+    "message",
+    "rule",
+    "type",
+    "tags",
+    "clean_code_attribute",
+    "clean_code_attribute_category",
+    "impacts",
+    "component",
+    TARGET_COLUMN,
+)
+
+
+def load_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    _validate_columns(df.columns)
+
+    normalized = df.copy()
+    normalized["tags"] = normalized["tags"].apply(_parse_tags)
+    normalized["severity"] = normalized["impacts"].apply(_extract_severity)
+    normalized["file_extension"] = normalized["component"].apply(_extract_file_extension)
+    normalized[TARGET_COLUMN] = normalized[TARGET_COLUMN].apply(_normalize_text)
+
+    for column in (
+        "message",
+        "rule",
+        "type",
+        "clean_code_attribute",
+        "clean_code_attribute_category",
+        "component",
+    ):
+        normalized[column] = normalized[column].apply(_normalize_text)
+
+    normalized = normalized[normalized[TARGET_COLUMN] != ""].reset_index(drop=True)
+    return normalized
+
+
+def _validate_columns(columns: Iterable[object]) -> None:
+    missing = sorted(set(REQUIRED_COLUMNS) - {str(column) for column in columns})
+    if missing:
+        formatted = ", ".join(missing)
+        raise ValueError(f"Dataset is missing required columns: {formatted}")
+
+
+def _normalize_text(value: object) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+
+    return str(value).strip()
+
+
+def _parse_tags(value: object) -> list[str]:
     if value is None:
         return []
 
@@ -30,7 +86,7 @@ def parse_tags(value: object) -> list[str]:
     return [item.strip() for item in text.split(",") if item.strip()]
 
 
-def extract_severity(value: object) -> str:
+def _extract_severity(value: object) -> str:
     parsed = _coerce_to_sequence(value)
     for item in parsed:
         if isinstance(item, dict):
@@ -41,7 +97,7 @@ def extract_severity(value: object) -> str:
     return "UNKNOWN"
 
 
-def extract_file_extension(component: object) -> str:
+def _extract_file_extension(component: object) -> str:
     if not isinstance(component, str) or not component.strip():
         return "unknown"
 
