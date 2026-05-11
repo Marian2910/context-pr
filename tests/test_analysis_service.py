@@ -14,13 +14,9 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
-<<<<<<< HEAD
 
-=======
->>>>>>> origin/main
 class FakeGitHubClient:
     def __init__(self) -> None:
-        """Initialize the fake client state."""
         self.created_reviews: list[tuple[PullRequestRef, list[GitHubReviewComment]]] = []
         self.deleted_comment_ids: list[int] = []
 
@@ -101,11 +97,7 @@ class FakeIssueEnricher:
                     "branches are not intentionally preserving behavior or readability."
                 ),
                 evidence_note=(
-<<<<<<< HEAD
                     "Historically similar cases usually disappeared during later "
-=======
-                    "In a small set of similar cases, developers leaned toward "
->>>>>>> origin/main
                     "small refactors."
                 ),
             ),
@@ -148,11 +140,7 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert "Sonar reported" not in comments[0].body
     assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
     assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
-<<<<<<< HEAD
     assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
-=======
-    assert "In a small set of similar cases, developers leaned toward small refactors." in comments[0].body
->>>>>>> origin/main
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -227,14 +215,8 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
         IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.MINIMAL,
-<<<<<<< HEAD
                 evidence_note="Historically similar cases usually disappeared during later small refactors.",
             ),
-=======
-                evidence_note="Similar cases here were often small refactors.",
-            ),
-            intent_prediction=None,
->>>>>>> origin/main
             historical_context=None,
         ),
     )
@@ -251,21 +233,13 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
                 level=GuidanceLevel.DETAILED,
                 explanation="Capture `prefix` when the lambda is created.",
             ),
-<<<<<<< HEAD
-=======
-            intent_prediction=None,
->>>>>>> origin/main
             historical_context=None,
         ),
     )
 
     assert minimal_note == (
         'Remove the unused local variable "name". '
-<<<<<<< HEAD
         "Historically similar cases usually disappeared during later small refactors."
-=======
-        "Similar cases here were often small refactors."
->>>>>>> origin/main
     )
     assert single_sentence_note == "Capture `prefix` when the lambda is created."
 

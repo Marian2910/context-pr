@@ -158,22 +158,12 @@ class AnalysisService:
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
     ) -> str:
-<<<<<<< HEAD
         note = AnalysisService._reviewer_note(issue, enrichment)
         return "\n\n".join((note, f"{COMMENT_MARKER_PREFIX}{issue.key} -->"))
-=======
-        comment_text = (
-            AnalysisService._reviewer_note(issue, enrichment)
-            if enrichment is not None
-            else issue.message
-        )
-        return f"{comment_text}\n\n{COMMENT_MARKER_PREFIX}{issue.key} -->"
->>>>>>> origin/main
 
     @staticmethod
     def _reviewer_note(
         issue: SonarIssue,
-<<<<<<< HEAD
         enrichment: IssueEnrichment | None,
     ) -> str:
         if enrichment is None:
@@ -196,30 +186,6 @@ class AnalysisService:
             if section is not None
         ]
         return "\n\n".join(sections) if sections else issue.message
-=======
-        enrichment: IssueEnrichment,
-    ) -> str:
-        guidance = enrichment.guidance
-        if guidance.level.value == "minimal":
-            parts = [issue.message]
-            if guidance.evidence_note is not None:
-                parts.append(guidance.evidence_note)
-            return " ".join(parts)
-
-        first_sentence = guidance.explanation or issue.message
-        second_sentence_parts = [
-            part
-            for part in (
-                guidance.next_step,
-                guidance.evidence_note,
-            )
-            if part is not None
-        ]
-        if not second_sentence_parts:
-            return first_sentence
-
-        return f"{first_sentence} {' '.join(second_sentence_parts)}"
->>>>>>> origin/main
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()

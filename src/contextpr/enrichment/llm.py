@@ -98,19 +98,15 @@ class LightweightLLMGuidanceVerbalizer:
                 "same_rule_matches": (
                     historical_context.same_rule_matches if historical_context else 0
                 ),
-<<<<<<< HEAD
                 "same_exact_path_matches": (
                     historical_context.same_exact_path_matches if historical_context else 0
                 ),
-=======
->>>>>>> origin/main
                 "same_scope_matches": (
                     historical_context.same_scope_matches if historical_context else 0
                 ),
                 "same_path_family_matches": (
                     historical_context.same_path_family_matches if historical_context else 0
                 ),
-<<<<<<< HEAD
                 "same_rule_share": (
                     historical_context.same_rule_share if historical_context else 0.0
                 ),
@@ -120,8 +116,6 @@ class LightweightLLMGuidanceVerbalizer:
                 "same_exact_path_share": (
                     historical_context.same_exact_path_share if historical_context else 0.0
                 ),
-=======
->>>>>>> origin/main
                 "dominant_maintenance": (
                     historical_context.dominant_maintenance if historical_context else None
                 ),
@@ -133,20 +127,12 @@ class LightweightLLMGuidanceVerbalizer:
             "rewrite_targets": rewrite_targets,
         }
         instruction = (
-<<<<<<< HEAD
             "You rewrite historically grounded pull request guidance for developers as a maintainability assistant. "
             "Do not restate Sonar's warning. "
             "Preserve uncertainty markers such as usually, often, split, or in a small set. "
             "Do not add claims, statistics, causes, or advice that are not present in the facts. "
             "When the facts mention recurrence, debt, hotspots, or later refactor burden, keep that emphasis. "
             "Make the explanation concrete and decision-oriented by telling the reviewer what to verify or pay down first. "
-=======
-            "You rewrite repository-grounded pull request guidance for developers. "
-            "Do not restate Sonar's warning. "
-            "Preserve uncertainty markers such as usually, often, split, or in a small set. "
-            "Do not add claims, statistics, causes, or advice that are not present in the facts. "
-            "Make the explanation concrete and decision-oriented by telling the reviewer what to verify first. "
->>>>>>> origin/main
             "Keep each returned field to one concise sentence. "
             "Return JSON only, using the same keys as rewrite_targets."
         )
@@ -220,7 +206,6 @@ class LightweightLLMGuidanceVerbalizer:
     ) -> str:
         if issue.issue_type == "BUG":
             return "Help the reviewer decide whether the warning may reflect a behavior change risk."
-<<<<<<< HEAD
         if issue.issue_type == "CODE_SMELL":
             if (
                 historical_context is not None
@@ -234,8 +219,6 @@ class LightweightLLMGuidanceVerbalizer:
                 "Help the reviewer judge whether this smell is recurring maintenance debt "
                 "and whether fixing it now avoids a later cleanup pass."
             )
-=======
->>>>>>> origin/main
         if historical_context is not None and historical_context.dominant_disposition == "persistent":
             return "Help the reviewer decide whether this warning should be addressed now or safely deferred."
         if guidance.evidence_note is not None:

@@ -7,16 +7,11 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
-<<<<<<< HEAD
 from contextpr.enrichment import (
     IssueEnricher,
     LLMVerbalizerSettings,
     LightweightLLMGuidanceVerbalizer,
 )
-=======
-from contextpr.enrichment import IssueEnricher
-from contextpr.enrichment.llm import LLMVerbalizerSettings, LightweightLLMGuidanceVerbalizer
->>>>>>> origin/main
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -112,11 +107,7 @@ def analyze(
         sonar_client=SonarQubeClient(settings),
         issue_enricher=IssueEnricher(
             dataset_path=settings.issue_dataset_path,
-<<<<<<< HEAD
             guidance_verbalizer=verbalizer,
-=======
-            guidance_verbalizer=_build_guidance_verbalizer(settings),
->>>>>>> origin/main
         ),
     )
 
@@ -136,19 +127,3 @@ def analyze(
 
 def run() -> None:
     app()
-
-
-def _build_guidance_verbalizer(
-    settings: Settings,
-) -> LightweightLLMGuidanceVerbalizer | None:
-    if not settings.llm_enabled:
-        return None
-
-    return LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url=settings.llm_api_url or "",
-            api_key=settings.llm_api_key or "",
-            model=settings.llm_model or "",
-            timeout_seconds=settings.llm_timeout_seconds,
-        )
-    )

@@ -16,11 +16,7 @@ DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
-<<<<<<< HEAD
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
-=======
-DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
->>>>>>> origin/main
 
 
 class ConfigurationError(ValueError):
@@ -126,10 +122,6 @@ class Settings:
     @property
     def sonar_enabled(self) -> bool:
         return bool(self.sonar_token and self.sonar_project_key)
-
-    @property
-    def llm_enabled(self) -> bool:
-        return bool(self.llm_api_url and self.llm_api_key and self.llm_model)
 
     def require(self, *field_names: str) -> None:
         missing = [field_name for field_name in field_names if not getattr(self, field_name)]

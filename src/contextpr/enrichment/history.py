@@ -38,13 +38,10 @@ class HistoricalContext:
     dominant_maintenance: str | None
     dominant_maintenance_share: float
     maintenance_distribution: tuple[tuple[str, int], ...]
-<<<<<<< HEAD
     same_exact_path_matches: int = 0
     same_rule_share: float = 0.0
     same_path_family_share: float = 0.0
     same_exact_path_share: float = 0.0
-=======
->>>>>>> origin/main
     dominant_disposition: str | None = None
     dominant_disposition_share: float = 0.0
     disposition_distribution: tuple[tuple[str, int], ...] = ()
@@ -82,7 +79,6 @@ class IssueHistoryRetriever:
         )
         dominant_maintenance, dominant_maintenance_share = self._dominant_share(
             maintenance_distribution,
-<<<<<<< HEAD
             sample_size=len(similar),
         )
         disposition_distribution = self._distribution(
@@ -121,48 +117,13 @@ class IssueHistoryRetriever:
             same_scope_matches=same_scope_matches,
             same_path_family_matches=same_path_family_matches,
             same_exact_path_matches=same_exact_path_matches,
-=======
-            sample_size=len(similar),
-        )
-        disposition_distribution = self._distribution(
-            disposition
-            for disposition in (
-                self._disposition_bucket(row) for _, row in similar.iterrows()
-            )
-            if disposition is not None
-        )
-        dominant_disposition, dominant_disposition_share = self._dominant_share(
-            disposition_distribution,
-            sample_size=sum(count for _, count in disposition_distribution),
-        )
-
-        issue_scope = self._path_scope(issue.location.path)
-        issue_family = self._path_family(issue.location.path)
-        same_scope_matches = 0
-        same_path_family_matches = 0
-        for _, row in similar.iterrows():
-            component_path = self._component_path(str(row.get("component", "")))
-            if self._path_scope(component_path) == issue_scope:
-                same_scope_matches += 1
-            if issue_family and self._path_family(component_path) == issue_family:
-                same_path_family_matches += 1
-
-        return HistoricalContext(
-            sample_size=len(similar),
-            same_rule_matches=int((similar["rule"] == issue.rule).sum()),
-            same_scope_matches=same_scope_matches,
-            same_path_family_matches=same_path_family_matches,
->>>>>>> origin/main
             strong_match_count=int((similar["retrieval_score"] >= STRONG_MATCH_SCORE).sum()),
             dominant_maintenance=dominant_maintenance,
             dominant_maintenance_share=dominant_maintenance_share,
             maintenance_distribution=maintenance_distribution,
-<<<<<<< HEAD
             same_rule_share=self._share(same_rule_matches, sample_size),
             same_path_family_share=self._share(same_path_family_matches, sample_size),
             same_exact_path_share=self._share(same_exact_path_matches, sample_size),
-=======
->>>>>>> origin/main
             dominant_disposition=dominant_disposition,
             dominant_disposition_share=dominant_disposition_share,
             disposition_distribution=disposition_distribution,
@@ -214,15 +175,12 @@ class IssueHistoryRetriever:
         return label, round(count / sample_size, 4)
 
     @staticmethod
-<<<<<<< HEAD
     def _share(count: int, sample_size: int) -> float:
         if sample_size <= 0:
             return 0.0
         return round(count / sample_size, 4)
 
     @staticmethod
-=======
->>>>>>> origin/main
     def _score_row(issue: SonarIssue, row: pd.Series) -> float:
         score = 0.0
 
@@ -233,11 +191,8 @@ class IssueHistoryRetriever:
 
         if row_rule == issue.rule:
             score += 7.0
-<<<<<<< HEAD
         if row_path == issue_path and issue_path:
             score += 3.5
-=======
->>>>>>> origin/main
         if str(row.get("type", "")) == issue.issue_type and issue.issue_type:
             score += 2.5
         if (
