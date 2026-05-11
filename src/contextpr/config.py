@@ -13,10 +13,14 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
-DEFAULT_INTENT_MODEL_PATH = Path("artifacts/intent_classifier.joblib")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
-DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
+DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
+<<<<<<< HEAD
+DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
+=======
+DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
+>>>>>>> origin/main
 
 
 class ConfigurationError(ValueError):
@@ -25,7 +29,6 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-
     github_token: str | None = None
     github_app_id: str | None = None
     github_installation_id: str | None = None
@@ -36,8 +39,11 @@ class Settings:
     sonar_host_url: str = DEFAULT_SONAR_HOST_URL
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
-    intent_model_path: Path = DEFAULT_INTENT_MODEL_PATH
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
+    llm_api_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
@@ -67,15 +73,18 @@ class Settings:
             or DEFAULT_SONAR_HOST_URL,
             sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
             sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
-            intent_model_path=_read_path(
-                env,
-                "CONTEXTPR_INTENT_MODEL_PATH",
-                default=DEFAULT_INTENT_MODEL_PATH,
-            ),
             issue_dataset_path=_read_path(
                 env,
                 "CONTEXTPR_ISSUE_DATASET_PATH",
                 default=DEFAULT_ISSUE_DATASET_PATH,
+            ),
+            llm_api_url=_read_optional(env, "CONTEXTPR_LLM_API_URL"),
+            llm_api_key=_read_optional(env, "CONTEXTPR_LLM_API_KEY"),
+            llm_model=_read_optional(env, "CONTEXTPR_LLM_MODEL"),
+            llm_timeout_seconds=_read_float(
+                env,
+                "CONTEXTPR_LLM_TIMEOUT_SECONDS",
+                default=DEFAULT_LLM_TIMEOUT_SECONDS,
             ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
@@ -108,12 +117,19 @@ class Settings:
             return "app"
         if self.github_token_enabled:
             return "token"
-
         return "none"
+
+    @property
+    def llm_enabled(self) -> bool:
+        return bool(self.llm_api_url and self.llm_api_key and self.llm_model)
 
     @property
     def sonar_enabled(self) -> bool:
         return bool(self.sonar_token and self.sonar_project_key)
+
+    @property
+    def llm_enabled(self) -> bool:
+        return bool(self.llm_api_url and self.llm_api_key and self.llm_model)
 
     def require(self, *field_names: str) -> None:
         missing = [field_name for field_name in field_names if not getattr(self, field_name)]
@@ -161,3 +177,16 @@ def _read_path(
         return default
 
     return Path(value)
+
+
+def _read_float(
+    environ: Mapping[str, str],
+    key: str,
+    *,
+    default: float,
+) -> float:
+    value = _read_optional(environ, key)
+    if value is None:
+        return default
+
+    return float(value)

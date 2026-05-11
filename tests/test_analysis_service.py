@@ -2,7 +2,6 @@ from contextpr.enrichment import (
     DeveloperGuidance,
     GuidanceLevel,
     HistoricalContext,
-    IntentPrediction,
     IssueEnrichment,
 )
 from contextpr.models import (
@@ -15,20 +14,11 @@ from contextpr.models import (
 )
 from contextpr.services import AnalysisService
 
-EXPLANATION_OPTIONS = (
-    "This looks like a cleanup issue rather than a functional change.",
-    "This seems more like code cleanup than a behavior fix.",
-    "This warning points more toward simplification than a change in behavior.",
-    "This looks like something to clean up rather than a functional defect.",
-)
+<<<<<<< HEAD
 
-EVIDENCE_OPTIONS = (
-    "Historical note: in a small set of similar cases, developers leaned toward routine cleanup.",
-)
-
-
+=======
+>>>>>>> origin/main
 class FakeGitHubClient:
-
     def __init__(self) -> None:
         """Initialize the fake client state."""
         self.created_reviews: list[tuple[PullRequestRef, list[GitHubReviewComment]]] = []
@@ -74,7 +64,6 @@ class FakeGitHubClient:
 
 
 class FakeSonarClient:
-
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
         return [
             SonarIssue(
@@ -102,30 +91,33 @@ class FakeSonarClient:
 
 
 class FakeIssueEnricher:
-
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
         return IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.DETAILED,
-                summary=(
-                    "Sonar flagged this because all branches of the condition appear "
-                    "to do the same thing."
-                ),
-                explanation="This looks like a cleanup issue rather than a functional change.",
+                explanation="This is probably safe to simplify if the current structure is not intentional.",
                 next_step=(
-                    "A good next step is to simplify the condition or remove duplicated "
-                    "branches if they are truly equivalent."
+                    "Before simplifying the conditional, verify that the repeated "
+                    "branches are not intentionally preserving behavior or readability."
                 ),
                 evidence_note=(
-                    "Historical note: in a small set of similar cases, "
-                    "developers leaned toward routine cleanup."
+<<<<<<< HEAD
+                    "Historically similar cases usually disappeared during later "
+=======
+                    "In a small set of similar cases, developers leaned toward "
+>>>>>>> origin/main
+                    "small refactors."
                 ),
             ),
-            intent_prediction=IntentPrediction(label="refactor", confidence=0.82),
             historical_context=HistoricalContext(
                 sample_size=6,
-                label_distribution=(("refactor", 4), ("fix", 2)),
                 same_rule_matches=3,
+                same_scope_matches=6,
+                same_path_family_matches=6,
+                strong_match_count=4,
+                dominant_maintenance="cleanup",
+                dominant_maintenance_share=0.6667,
+                maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
             ),
         )
 
@@ -153,12 +145,14 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert len(comments) == 1
     assert comments[0].start_line == 11
     assert comments[0].line == 12
-    assert "Sonar reported a `MAJOR` issue (`python:S100`):" in comments[0].body
-    assert "First issue" in comments[0].body
-    assert any(option in comments[0].body for option in EXPLANATION_OPTIONS)
-    assert any(option in comments[0].body for option in EVIDENCE_OPTIONS)
-    assert "Likely remediation intent" not in comments[0].body
-    assert "Historical pattern:" not in comments[0].body
+    assert "Sonar reported" not in comments[0].body
+    assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
+    assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
+<<<<<<< HEAD
+    assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
+=======
+    assert "In a small set of similar cases, developers leaned toward small refactors." in comments[0].body
+>>>>>>> origin/main
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -219,3 +213,73 @@ def test_extract_added_lines_handles_multiple_hunks_and_deletions() -> None:
 def test_extract_added_lines_returns_empty_set_for_invalid_patch() -> None:
     assert AnalysisService._extract_added_lines(None) == set()
     assert AnalysisService._extract_added_lines("not a hunk") == set()
+
+
+def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
+    minimal_note = AnalysisService._reviewer_note(
+        SonarIssue(
+            key="issue-minimal",
+            rule="python:S1481",
+            severity="MINOR",
+            message='Remove the unused local variable "name".',
+            location=IssueLocation(path="src/app.py", line=11),
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.MINIMAL,
+<<<<<<< HEAD
+                evidence_note="Historically similar cases usually disappeared during later small refactors.",
+            ),
+=======
+                evidence_note="Similar cases here were often small refactors.",
+            ),
+            intent_prediction=None,
+>>>>>>> origin/main
+            historical_context=None,
+        ),
+    )
+    single_sentence_note = AnalysisService._reviewer_note(
+        SonarIssue(
+            key="issue-detailed",
+            rule="python:S1515",
+            severity="MAJOR",
+            message="Loop variable capture",
+            location=IssueLocation(path="src/app.py", line=20),
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
+                explanation="Capture `prefix` when the lambda is created.",
+            ),
+<<<<<<< HEAD
+=======
+            intent_prediction=None,
+>>>>>>> origin/main
+            historical_context=None,
+        ),
+    )
+
+    assert minimal_note == (
+        'Remove the unused local variable "name". '
+<<<<<<< HEAD
+        "Historically similar cases usually disappeared during later small refactors."
+=======
+        "Similar cases here were often small refactors."
+>>>>>>> origin/main
+    )
+    assert single_sentence_note == "Capture `prefix` when the lambda is created."
+
+
+def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:
+    assert AnalysisService._comment_start_line(
+        SonarIssue(
+            key="issue-range-none",
+            rule="python:S100",
+            severity="MAJOR",
+            message="Invalid range",
+            location=IssueLocation(path="src/app.py", line=10, end_line=10),
+        ),
+        changed_lines={10},
+    ) is None
+    assert AnalysisService._parse_hunk_new_start("@@ invalid @@") is None
+    assert AnalysisService._parse_hunk_new_start("@@ -1,2 -3,4 @@") is None

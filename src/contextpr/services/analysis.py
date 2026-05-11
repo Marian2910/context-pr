@@ -17,7 +17,6 @@ COMMENT_MARKER_PREFIX = "<!-- contextpr:issue="
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
-
     pull_request: PullRequestRef
     fetched_issues: int
     eligible_issues: int
@@ -27,7 +26,6 @@ class AnalysisResult:
 
 
 class GitHubAnalysisClient(Protocol):
-
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
         ...
 
@@ -53,19 +51,16 @@ class GitHubAnalysisClient(Protocol):
 
 
 class SonarAnalysisClient(Protocol):
-
     def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
         ...
 
 
 class IssueEnrichmentClient(Protocol):
-
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
         ...
 
 
 class AnalysisService:
-
     def __init__(
         self,
         github_client: GitHubAnalysisClient,
@@ -163,28 +158,68 @@ class AnalysisService:
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
     ) -> str:
-        sections = [
-            f"Sonar reported a `{issue.severity}` issue (`{issue.rule}`):",
-            issue.message,
-        ]
-        if enrichment is not None:
-            sections.extend(AnalysisService._enrichment_blocks(enrichment))
-
-        sections.append(f"{COMMENT_MARKER_PREFIX}{issue.key} -->")
-        return "\n\n".join(sections)
+<<<<<<< HEAD
+        note = AnalysisService._reviewer_note(issue, enrichment)
+        return "\n\n".join((note, f"{COMMENT_MARKER_PREFIX}{issue.key} -->"))
+=======
+        comment_text = (
+            AnalysisService._reviewer_note(issue, enrichment)
+            if enrichment is not None
+            else issue.message
+        )
+        return f"{comment_text}\n\n{COMMENT_MARKER_PREFIX}{issue.key} -->"
+>>>>>>> origin/main
 
     @staticmethod
-    def _enrichment_blocks(enrichment: IssueEnrichment) -> list[str]:
-        return [
-            block
-            for block in (
-                enrichment.guidance.summary,
-                enrichment.guidance.explanation,
-                enrichment.guidance.next_step,
-                enrichment.guidance.evidence_note,
+    def _reviewer_note(
+        issue: SonarIssue,
+<<<<<<< HEAD
+        enrichment: IssueEnrichment | None,
+    ) -> str:
+        if enrichment is None:
+            return issue.message
+
+        guidance = enrichment.guidance
+        if guidance.level is guidance.level.MINIMAL:
+            sections = [issue.message]
+            if guidance.evidence_note is not None:
+                sections.append(guidance.evidence_note)
+            return " ".join(sections)
+
+        sections = [
+            section
+            for section in (
+                guidance.explanation,
+                guidance.next_step,
+                guidance.evidence_note,
             )
-            if block is not None
+            if section is not None
         ]
+        return "\n\n".join(sections) if sections else issue.message
+=======
+        enrichment: IssueEnrichment,
+    ) -> str:
+        guidance = enrichment.guidance
+        if guidance.level.value == "minimal":
+            parts = [issue.message]
+            if guidance.evidence_note is not None:
+                parts.append(guidance.evidence_note)
+            return " ".join(parts)
+
+        first_sentence = guidance.explanation or issue.message
+        second_sentence_parts = [
+            part
+            for part in (
+                guidance.next_step,
+                guidance.evidence_note,
+            )
+            if part is not None
+        ]
+        if not second_sentence_parts:
+            return first_sentence
+
+        return f"{first_sentence} {' '.join(second_sentence_parts)}"
+>>>>>>> origin/main
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()
@@ -239,12 +274,11 @@ class AnalysisService:
         if len(parts) < 3:
             return None
 
-        new_part = parts[2]
-        if not new_part.startswith("+"):
+        new_range = parts[2]
+        if not new_range.startswith("+"):
             return None
 
-        start_text = new_part[1:].split(",", maxsplit=1)[0]
-        try:
-            return int(start_text)
-        except ValueError:
+        first_part = new_range[1:].split(",", maxsplit=1)[0]
+        if not first_part.isdigit():
             return None
+        return int(first_part)
