@@ -1,4 +1,14 @@
-from contextpr.enrichment.history import HistoricalContext, IssueHistoryRetriever
+from contextpr.enrichment.history import (
+    CombinedHistoricalContext,
+    GlobalDatasetHistoryRetriever,
+    HistoricalContext,
+    IssueContextEvidence,
+    IssueHistoryRetriever,
+    LocalGitHistoryRetriever,
+    LocalPullRequestHistoryRetriever,
+    LocalReviewCommentHistoryRetriever,
+    LocalSonarHistoryRetriever,
+)
 from contextpr.enrichment.llm import LLMVerbalizerSettings, LightweightLLMGuidanceVerbalizer
 from contextpr.enrichment.nlp import (
     DeveloperGuidance,
@@ -10,10 +20,17 @@ from contextpr.enrichment.nlp import (
 __all__ = [
     "DeveloperGuidance",
     "GuidanceLevel",
+    "CombinedHistoricalContext",
+    "GlobalDatasetHistoryRetriever",
     "HistoricalContext",
+    "IssueContextEvidence",
     "IssueEnricher",
     "IssueEnrichment",
     "IssueHistoryRetriever",
+    "LocalGitHistoryRetriever",
+    "LocalPullRequestHistoryRetriever",
+    "LocalReviewCommentHistoryRetriever",
+    "LocalSonarHistoryRetriever",
     "LLMVerbalizerSettings",
     "LightweightLLMGuidanceVerbalizer",
 ]

@@ -5,13 +5,19 @@ from enum import StrEnum
 from pathlib import Path
 
 from contextpr.enrichment.history import (
+    CombinedHistoricalContext,
     DISPOSITION_LABELS,
+    GlobalDatasetHistoryRetriever,
     MAINTENANCE_LABELS,
     HistoricalContext,
-    IssueHistoryRetriever,
+    LocalGitHistoryRetriever,
+    LocalPullRequestHistoryRetriever,
+    LocalReviewCommentHistoryRetriever,
+    LocalSonarHistoryRetriever,
 )
 from contextpr.enrichment.llm import GuidanceVerbalizer
 from contextpr.models import SonarIssue
+from contextpr.persistence import HistoryStore
 
 VariantOptions = tuple[str, str, str, str]
 
@@ -117,7 +123,7 @@ class DeveloperGuidance:
 @dataclass(frozen=True, slots=True)
 class IssueEnrichment:
     guidance: DeveloperGuidance
-    historical_context: HistoricalContext | None
+    historical_context: CombinedHistoricalContext | None
 
 
 class IssueEnricher:
@@ -125,13 +131,67 @@ class IssueEnricher:
         self,
         dataset_path: Path,
         guidance_verbalizer: GuidanceVerbalizer | None = None,
+        *,
+        enable_local_history: bool = False,
+        history_store: HistoryStore | None = None,
+        repository_key: str | None = None,
     ) -> None:
-        self._history_retriever = IssueHistoryRetriever(dataset_path)
+        self._global_history_retriever = GlobalDatasetHistoryRetriever(dataset_path)
         self._guidance_verbalizer = guidance_verbalizer
+        self._enable_local_history = enable_local_history
+        self._local_history_retriever = (
+            LocalSonarHistoryRetriever(history_store, repository_key)
+            if enable_local_history and history_store is not None and repository_key is not None
+            else None
+        )
+        self._local_git_history_retriever = (
+            LocalGitHistoryRetriever(history_store, repository_key)
+            if enable_local_history and history_store is not None and repository_key is not None
+            else None
+        )
+        self._local_pr_history_retriever = (
+            LocalPullRequestHistoryRetriever(history_store, repository_key)
+            if enable_local_history and history_store is not None and repository_key is not None
+            else None
+        )
+        self._local_review_comment_history_retriever = (
+            LocalReviewCommentHistoryRetriever(history_store, repository_key)
+            if enable_local_history and history_store is not None and repository_key is not None
+            else None
+        )
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
-        historical_context = self._history_retriever.find_context(issue)
-        guidance = self._build_guidance(issue, historical_context)
+        if self._enable_local_history and self._local_history_retriever is None:
+            raise NotImplementedError(
+                "Local repository history mode requires a configured repository store."
+            )
+
+        historical_context = CombinedHistoricalContext(
+            local_sonar=(
+                self._local_history_retriever.find_context(issue)
+                if self._local_history_retriever is not None
+                else None
+            ),
+            local_git=(
+                self._local_git_history_retriever.find_context(issue)
+                if self._local_git_history_retriever is not None
+                else None
+            ),
+            local_prs=(
+                self._local_pr_history_retriever.find_context(issue)
+                if self._local_pr_history_retriever is not None
+                else None
+            ),
+            local_review_comments=(
+                self._local_review_comment_history_retriever.find_context(issue)
+                if self._local_review_comment_history_retriever is not None
+                else None
+            ),
+            global_dataset=self._global_history_retriever.find_context(issue),
+        )
+        active_history = self._active_history(historical_context)
+        active_source = self._active_source(historical_context)
+        guidance = self._build_guidance(issue, active_history, active_source)
         if guidance is None:
             return None
 
@@ -143,23 +203,38 @@ class IssueEnricher:
             historical_context=historical_context,
         )
 
+    @staticmethod
+    def _active_history(
+        historical_context: CombinedHistoricalContext | None,
+    ) -> HistoricalContext | None:
+        if historical_context is None:
+            return None
+        return historical_context.preferred_evidence()
+
+    @staticmethod
+    def _active_source(historical_context: CombinedHistoricalContext | None) -> str | None:
+        if historical_context is None:
+            return None
+        return historical_context.preferred_source_name()
+
     def _build_guidance(
         self,
         issue: SonarIssue,
         historical_context: HistoricalContext | None,
+        history_source: str | None,
     ) -> DeveloperGuidance | None:
         issue_pattern = self._issue_pattern(issue)
         guidance_level = self._guidance_level(issue, issue_pattern, historical_context)
         if guidance_level is GuidanceLevel.NONE:
             return None
 
-        evidence_note = self._build_evidence_note(historical_context)
+        evidence_note = self._build_evidence_note(historical_context, history_source)
         if guidance_level is GuidanceLevel.MINIMAL:
             return DeveloperGuidance(level=guidance_level, evidence_note=evidence_note)
 
-        explanation = self._build_explanation(issue, historical_context)
+        explanation = self._build_explanation(issue, historical_context, history_source)
         next_step = (
-            self._build_next_step(issue, issue_pattern, historical_context)
+            self._build_next_step(issue, issue_pattern, historical_context, history_source)
             if guidance_level is GuidanceLevel.DETAILED
             else None
         )
@@ -224,6 +299,7 @@ class IssueEnricher:
         self,
         issue: SonarIssue,
         historical_context: HistoricalContext | None,
+        history_source: str | None,
     ) -> str:
         issue_pattern = self._issue_pattern(issue)
         if issue_pattern == "loop_variable_capture":
@@ -241,13 +317,14 @@ class IssueEnricher:
             )
 
         assert historical_context is not None
-        return self._build_maintainability_explanation(historical_context)
+        return self._build_maintainability_explanation(historical_context, history_source)
 
     def _build_next_step(
         self,
         issue: SonarIssue,
         issue_pattern: str,
         historical_context: HistoricalContext | None,
+        history_source: str | None,
     ) -> str:
         if issue_pattern == "loop_variable_capture":
             return self._pick_required_option(
@@ -264,17 +341,18 @@ class IssueEnricher:
             )
 
         assert historical_context is not None
-        return self._build_maintainability_next_step(historical_context)
+        return self._build_maintainability_next_step(historical_context, history_source)
 
     def _build_evidence_note(
         self,
         historical_context: HistoricalContext | None,
+        history_source: str | None,
     ) -> str | None:
         if not self._has_actionable_history(historical_context):
             return None
 
         assert historical_context is not None
-        return self._build_maintainability_evidence_note(historical_context)
+        return self._build_maintainability_evidence_note(historical_context, history_source)
 
     @staticmethod
     def _needs_duplicate_condition_context(
@@ -309,8 +387,9 @@ class IssueEnricher:
     def _build_maintainability_explanation(
         self,
         historical_context: HistoricalContext,
+        history_source: str | None = None,
     ) -> str:
-        location_subject = self._location_subject(historical_context)
+        location_subject = self._location_subject(historical_context, history_source)
         focus = self._maintainability_focus(historical_context)
         if focus == "behavior_sensitive":
             return (
@@ -340,7 +419,9 @@ class IssueEnricher:
     def _build_maintainability_next_step(
         self,
         historical_context: HistoricalContext,
+        history_source: str | None = None,
     ) -> str:
+        _ = history_source
         focus = self._maintainability_focus(historical_context)
         if focus == "behavior_sensitive":
             return (
@@ -368,8 +449,9 @@ class IssueEnricher:
     def _build_maintainability_evidence_note(
         self,
         historical_context: HistoricalContext,
+        history_source: str | None = None,
     ) -> str | None:
-        location_clause = self._evidence_location_clause(historical_context)
+        location_clause = self._evidence_location_clause(historical_context, history_source)
         pattern_clause = self._evidence_pattern_clause(historical_context)
         if location_clause and pattern_clause:
             return f"{location_clause} and {pattern_clause}."
@@ -380,7 +462,24 @@ class IssueEnricher:
         return None
 
     @staticmethod
-    def _evidence_location_clause(historical_context: HistoricalContext) -> str | None:
+    def _evidence_location_clause(
+        historical_context: HistoricalContext,
+        history_source: str | None = None,
+    ) -> str | None:
+        if history_source in {
+            "local_sonar",
+            "local_git",
+            "local_prs",
+            "local_review_comments",
+        }:
+            if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
+                return "Similar issues in this repository have clustered in the same file"
+            if (
+                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+            ):
+                return "Similar issues in this repository have clustered in the same module area"
+            return None
         if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
             return "Retrieved historical matches clustered around the same file path"
         if (
@@ -440,7 +539,24 @@ class IssueEnricher:
         return None
 
     @staticmethod
-    def _location_subject(historical_context: HistoricalContext) -> str:
+    def _location_subject(
+        historical_context: HistoricalContext,
+        history_source: str | None = None,
+    ) -> str:
+        if history_source in {
+            "local_sonar",
+            "local_git",
+            "local_prs",
+            "local_review_comments",
+        }:
+            if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
+                return "this file"
+            if (
+                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+            ):
+                return "this module area"
+            return "this repository"
         if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
             return "matching file paths"
         if (

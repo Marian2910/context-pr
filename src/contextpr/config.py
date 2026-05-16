@@ -14,8 +14,10 @@ load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
+DEFAULT_LOCAL_HISTORY_DB_PATH = Path.home() / ".contextpr" / "history.db"
 DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOCAL_HISTORY_ENABLED = False
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
 
 
@@ -36,10 +38,12 @@ class Settings:
     sonar_organization: str | None = None
     sonar_project_key: str | None = None
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
+    local_history_db_path: Path = DEFAULT_LOCAL_HISTORY_DB_PATH
     llm_api_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
+    local_history_enabled: bool = DEFAULT_LOCAL_HISTORY_ENABLED
     log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
@@ -74,6 +78,11 @@ class Settings:
                 "CONTEXTPR_ISSUE_DATASET_PATH",
                 default=DEFAULT_ISSUE_DATASET_PATH,
             ),
+            local_history_db_path=_read_path(
+                env,
+                "CONTEXTPR_LOCAL_HISTORY_DB_PATH",
+                default=DEFAULT_LOCAL_HISTORY_DB_PATH,
+            ),
             llm_api_url=_read_optional(env, "CONTEXTPR_LLM_API_URL"),
             llm_api_key=_read_optional(env, "CONTEXTPR_LLM_API_KEY"),
             llm_model=_read_optional(env, "CONTEXTPR_LLM_MODEL"),
@@ -81,6 +90,11 @@ class Settings:
                 env,
                 "CONTEXTPR_LLM_TIMEOUT_SECONDS",
                 default=DEFAULT_LLM_TIMEOUT_SECONDS,
+            ),
+            local_history_enabled=_read_bool(
+                env,
+                "CONTEXTPR_ENABLE_LOCAL_HISTORY",
+                default=DEFAULT_LOCAL_HISTORY_ENABLED,
             ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
@@ -168,7 +182,7 @@ def _read_path(
     if value is None:
         return default
 
-    return Path(value)
+    return Path(value).expanduser()
 
 
 def _read_float(
@@ -182,3 +196,22 @@ def _read_float(
         return default
 
     return float(value)
+
+
+def _read_bool(
+    environ: Mapping[str, str],
+    key: str,
+    *,
+    default: bool,
+) -> bool:
+    value = _read_optional(environ, key)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    raise ConfigurationError(f"Invalid boolean value for {key}: {value}")

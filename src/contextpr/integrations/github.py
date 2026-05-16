@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urljoin
@@ -15,8 +16,28 @@ from contextpr.models import (
     PullRequestFile,
     PullRequestRef,
 )
+from contextpr.persistence import (
+    HistoryStore,
+    PullRequestFileRecord,
+    PullRequestRecord,
+    PullRequestReviewCommentRecord,
+    SyncStateRecord,
+)
 
 logger = logging.getLogger(__name__)
+LOCAL_GITHUB_SYNC_SOURCE = "local_github_history"
+GITHUB_HISTORY_PAGE_SIZE = 50
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubHistorySyncResult:
+    repository_key: str
+    pages_fetched: int
+    pull_requests_seen: int
+    pull_requests_upserted: int
+    files_recorded: int
+    review_comments_recorded: int
+    latest_update: str | None
 
 
 class GitHubClient:
@@ -53,6 +74,100 @@ class GitHubClient:
                 )
 
         return files
+
+    def sync_repository_history(
+        self,
+        *,
+        store: HistoryStore,
+        repository_key: str,
+        page_size: int = GITHUB_HISTORY_PAGE_SIZE,
+    ) -> GitHubHistorySyncResult:
+        with store.acquire_repository_lock(repository_key):
+            previous_state = store.get_sync_state(repository_key, LOCAL_GITHUB_SYNC_SOURCE)
+            previous_cursor = previous_state.cursor if previous_state is not None else None
+            page_number = 1
+            pages_fetched = 0
+            pull_requests_seen = 0
+            pull_requests_upserted = 0
+            files_recorded = 0
+            review_comments_recorded = 0
+            latest_update = previous_cursor
+
+            while True:
+                payload = self._get_json_list(
+                    f"/repos/{repository_key}/pulls?state=all&sort=updated&direction=desc&per_page={page_size}&page={page_number}"
+                )
+                pages_fetched += 1
+                if not payload:
+                    break
+
+                should_stop = False
+                for item in payload:
+                    if not isinstance(item, Mapping):
+                        continue
+                    pull_requests_seen += 1
+                    updated_at = self._optional_string(item, "updated_at")
+                    if previous_cursor and updated_at and updated_at <= previous_cursor:
+                        should_stop = True
+                        continue
+                    if updated_at and (latest_update is None or updated_at > latest_update):
+                        latest_update = updated_at
+
+                    if (record := self._map_pull_request_record(item)) is None:
+                        continue
+
+                    files = tuple(
+                        PullRequestFileRecord(pr_number=record.pr_number, file_path=file_record.path)
+                        for file_record in self.get_pull_request_files(
+                            PullRequestRef(repository=repository_key, number=record.pr_number)
+                        )
+                    )
+                    review_comments = tuple(
+                        PullRequestReviewCommentRecord(
+                            comment_id=comment.comment_id,
+                            pr_number=record.pr_number,
+                            body=comment.body,
+                            file_path=comment.path,
+                            line=comment.line,
+                            author_role=comment.author_login,
+                        )
+                        for comment in self.list_existing_review_comments(
+                            PullRequestRef(repository=repository_key, number=record.pr_number)
+                        )
+                    )
+                    store.upsert_pull_request(
+                        repository_key,
+                        record,
+                        files=files,
+                        review_comments=review_comments,
+                    )
+                    pull_requests_upserted += 1
+                    files_recorded += len(files)
+                    review_comments_recorded += len(review_comments)
+
+                if latest_update is not None:
+                    store.upsert_sync_state(
+                        SyncStateRecord(
+                            repository_key=repository_key,
+                            source_name=LOCAL_GITHUB_SYNC_SOURCE,
+                            cursor=latest_update,
+                            updated_at=latest_update,
+                        )
+                    )
+
+                if should_stop or len(payload) < page_size:
+                    break
+                page_number += 1
+
+            return GitHubHistorySyncResult(
+                repository_key=repository_key,
+                pages_fetched=pages_fetched,
+                pull_requests_seen=pull_requests_seen,
+                pull_requests_upserted=pull_requests_upserted,
+                files_recorded=files_recorded,
+                review_comments_recorded=review_comments_recorded,
+                latest_update=latest_update,
+            )
 
     def list_existing_review_comments(
         self,
@@ -168,6 +283,27 @@ class GitHubClient:
             "Content-Type": "application/json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    @staticmethod
+    def _optional_string(payload: Mapping[str, object], key: str) -> str | None:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    def _map_pull_request_record(self, payload: Mapping[str, object]) -> PullRequestRecord | None:
+        pr_number = payload.get("number")
+        title = payload.get("title")
+        if not isinstance(pr_number, int) or not isinstance(title, str):
+            return None
+        return PullRequestRecord(
+            pr_number=pr_number,
+            title=title,
+            body=self._optional_string(payload, "body"),
+            state=self._optional_string(payload, "state"),
+            merged_at=self._optional_string(payload, "merged_at"),
+            updated_at=self._optional_string(payload, "updated_at"),
+        )
 
     @staticmethod
     def _review_comment_payload(comment: GitHubReviewComment) -> dict[str, object]:

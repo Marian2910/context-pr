@@ -7,7 +7,7 @@ from urllib.parse import quote
 from typing import TYPE_CHECKING, Protocol
 from urllib import error, request
 
-from contextpr.enrichment.history import HistoricalContext
+from contextpr.enrichment.history import CombinedHistoricalContext, HistoricalContext
 from contextpr.models import SonarIssue
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ class GuidanceVerbalizer(Protocol):
         self,
         issue: SonarIssue,
         guidance: DeveloperGuidance,
-        historical_context: HistoricalContext | None,
+        historical_context: CombinedHistoricalContext | None,
     ) -> DeveloperGuidance:
         ...
 
@@ -45,7 +45,7 @@ class LightweightLLMGuidanceVerbalizer:
         self,
         issue: SonarIssue,
         guidance: DeveloperGuidance,
-        historical_context: HistoricalContext | None,
+        historical_context: CombinedHistoricalContext | None,
     ) -> DeveloperGuidance:
         rewrite_targets = self._rewrite_targets(guidance)
         if not any(rewrite_targets.values()):
@@ -83,8 +83,9 @@ class LightweightLLMGuidanceVerbalizer:
         issue: SonarIssue,
         guidance: DeveloperGuidance,
         rewrite_targets: dict[str, str | None],
-        historical_context: HistoricalContext | None,
+        historical_context: CombinedHistoricalContext | None,
     ) -> dict[str, object]:
+        active_history = self._active_history(historical_context)
         facts = {
             "rule": issue.rule,
             "severity": issue.severity,
@@ -94,34 +95,35 @@ class LightweightLLMGuidanceVerbalizer:
             "review_goal": self._review_goal(issue, guidance, historical_context),
             "first_check": guidance.next_step,
             "history": {
-                "sample_size": historical_context.sample_size if historical_context else 0,
+                "sample_size": active_history.sample_size if active_history else 0,
                 "same_rule_matches": (
-                    historical_context.same_rule_matches if historical_context else 0
+                    active_history.same_rule_matches if active_history else 0
                 ),
                 "same_exact_path_matches": (
-                    historical_context.same_exact_path_matches if historical_context else 0
+                    active_history.same_exact_path_matches if active_history else 0
                 ),
                 "same_scope_matches": (
-                    historical_context.same_scope_matches if historical_context else 0
+                    active_history.same_scope_matches if active_history else 0
                 ),
                 "same_path_family_matches": (
-                    historical_context.same_path_family_matches if historical_context else 0
+                    active_history.same_path_family_matches if active_history else 0
                 ),
                 "same_rule_share": (
-                    historical_context.same_rule_share if historical_context else 0.0
+                    active_history.same_rule_share if active_history else 0.0
                 ),
                 "same_path_family_share": (
-                    historical_context.same_path_family_share if historical_context else 0.0
+                    active_history.same_path_family_share if active_history else 0.0
                 ),
                 "same_exact_path_share": (
-                    historical_context.same_exact_path_share if historical_context else 0.0
+                    active_history.same_exact_path_share if active_history else 0.0
                 ),
                 "dominant_maintenance": (
-                    historical_context.dominant_maintenance if historical_context else None
+                    active_history.dominant_maintenance if active_history else None
                 ),
                 "dominant_disposition": (
-                    historical_context.dominant_disposition if historical_context else None
+                    active_history.dominant_disposition if active_history else None
                 ),
+                "source": self._history_source(historical_context),
                 "historical_note": guidance.evidence_note,
             },
             "rewrite_targets": rewrite_targets,
@@ -202,14 +204,15 @@ class LightweightLLMGuidanceVerbalizer:
     def _review_goal(
         issue: SonarIssue,
         guidance: DeveloperGuidance,
-        historical_context: HistoricalContext | None,
+        historical_context: CombinedHistoricalContext | None,
     ) -> str:
+        active_history = LightweightLLMGuidanceVerbalizer._active_history(historical_context)
         if issue.issue_type == "BUG":
             return "Help the reviewer decide whether the warning may reflect a behavior change risk."
         if issue.issue_type == "CODE_SMELL":
             if (
-                historical_context is not None
-                and historical_context.dominant_disposition == "persistent"
+                active_history is not None
+                and active_history.dominant_disposition == "persistent"
             ):
                 return (
                     "Help the reviewer judge whether this debt tends to linger in this area "
@@ -219,11 +222,41 @@ class LightweightLLMGuidanceVerbalizer:
                 "Help the reviewer judge whether this smell is recurring maintenance debt "
                 "and whether fixing it now avoids a later cleanup pass."
             )
-        if historical_context is not None and historical_context.dominant_disposition == "persistent":
+        if active_history is not None and active_history.dominant_disposition == "persistent":
             return "Help the reviewer decide whether this warning should be addressed now or safely deferred."
         if guidance.evidence_note is not None:
             return "Help the reviewer decide whether this is a straightforward refactor or needs closer review."
         return "Help the reviewer decide what to inspect first."
+
+    @staticmethod
+    def _active_history(
+        historical_context: CombinedHistoricalContext | HistoricalContext | None,
+    ) -> HistoricalContext | None:
+        if historical_context is None:
+            return None
+        if isinstance(historical_context, HistoricalContext):
+            return historical_context
+        return historical_context.preferred_evidence()
+
+    @staticmethod
+    def _history_source(
+        historical_context: CombinedHistoricalContext | HistoricalContext | None,
+    ) -> str | None:
+        if historical_context is None:
+            return None
+        if isinstance(historical_context, HistoricalContext):
+            return "global_dataset"
+        if historical_context.local_sonar is not None:
+            return "local_sonar"
+        if historical_context.local_git is not None:
+            return "local_git"
+        if historical_context.local_prs is not None:
+            return "local_prs"
+        if historical_context.local_review_comments is not None:
+            return "local_review_comments"
+        if historical_context.global_dataset is not None:
+            return "global_dataset"
+        return None
 
     def _call_model(self, payload: dict[str, object]) -> dict[str, str] | None:
         body = json.dumps(payload).encode("utf-8")

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 from urllib.request import Request
 
 import pytest
 
 from contextpr.config import Settings
-from contextpr.integrations.github import GitHubClient
+from contextpr.integrations.github import (
+    LOCAL_GITHUB_SYNC_SOURCE,
+    GitHubClient,
+    GitHubHistorySyncResult,
+)
 from contextpr.models import GitHubReviewComment, PullRequestRef
+from contextpr.persistence import HistoryStore, SyncStateRecord
 
 
 class FakeResponse:
@@ -157,6 +163,120 @@ def test_delete_review_comment_sends_delete_request(monkeypatch: pytest.MonkeyPa
 
     assert captured["url"].endswith("/repos/octo/example/pulls/comments/42")
     assert captured["method"] == "DELETE"
+
+
+def test_sync_repository_history_persists_pull_requests_files_and_review_comments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    client = _client()
+    calls: list[str] = []
+
+    def fake_get_json_list(path: str) -> list[object]:
+        calls.append(path)
+        if path.startswith("/repos/octo/example/pulls?"):
+            return [
+                {
+                    "number": 7,
+                    "title": "Refactor handler",
+                    "body": "Cleanup with behavior review",
+                    "state": "closed",
+                    "merged_at": "2026-05-16T09:00:00Z",
+                    "updated_at": "2026-05-16T10:00:00Z",
+                }
+            ]
+        if path == "/repos/octo/example/pulls/7/files":
+            return [
+                {
+                    "filename": "src/app.py",
+                    "status": "modified",
+                    "patch": "@@ -1 +1 @@\n+new\n",
+                }
+            ]
+        if path == "/repos/octo/example/pulls/7/comments":
+            return [
+                {
+                    "id": 10,
+                    "path": "src/app.py",
+                    "line": 7,
+                    "body": "Please confirm this is behavior-safe.",
+                    "user": {"login": "reviewer-1"},
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(client, "_get_json_list", fake_get_json_list)
+
+    result = client.sync_repository_history(
+        store=store,
+        repository_key="octo/example",
+    )
+
+    assert isinstance(result, GitHubHistorySyncResult)
+    assert result.pull_requests_upserted == 1
+    assert result.files_recorded == 1
+    assert result.review_comments_recorded == 1
+    assert store.get_pull_request("octo/example", 7) is not None
+    assert [file.file_path for file in store.list_pull_request_files("octo/example", 7)] == [
+        "src/app.py"
+    ]
+    assert [
+        comment.comment_id
+        for comment in store.list_pull_request_review_comments("octo/example", 7)
+    ] == [10]
+    checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_SYNC_SOURCE)
+    assert checkpoint is not None
+    assert checkpoint.cursor == "2026-05-16T10:00:00Z"
+
+
+def test_sync_repository_history_stops_when_it_reaches_existing_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_sync_state(
+        SyncStateRecord(
+            repository_key="octo/example",
+            source_name=LOCAL_GITHUB_SYNC_SOURCE,
+            cursor="2026-05-16T10:00:00Z",
+            updated_at="2026-05-16T10:00:00Z",
+        )
+    )
+    client = _client()
+
+    def fake_get_json_list(path: str) -> list[object]:
+        if path.startswith("/repos/octo/example/pulls?"):
+            return [
+                {
+                    "number": 8,
+                    "title": "New cleanup",
+                    "updated_at": "2026-05-16T10:30:00Z",
+                },
+                {
+                    "number": 7,
+                    "title": "Old cleanup",
+                    "updated_at": "2026-05-16T10:00:00Z",
+                },
+            ]
+        if path == "/repos/octo/example/pulls/8/files":
+            return [{"filename": "src/app.py", "status": "modified"}]
+        if path == "/repos/octo/example/pulls/8/comments":
+            return []
+        return []
+
+    monkeypatch.setattr(client, "_get_json_list", fake_get_json_list)
+
+    result = client.sync_repository_history(
+        store=store,
+        repository_key="octo/example",
+    )
+
+    assert result.pull_requests_upserted == 1
+    assert [pull_request.pr_number for pull_request in store.list_pull_requests("octo/example")] == [8]
+    checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_SYNC_SOURCE)
+    assert checkpoint is not None
+    assert checkpoint.cursor == "2026-05-16T10:30:00Z"
 
 
 def _client() -> GitHubClient:

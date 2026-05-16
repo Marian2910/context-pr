@@ -1,4 +1,5 @@
 from contextpr.enrichment import (
+    CombinedHistoricalContext,
     DeveloperGuidance,
     GuidanceLevel,
     HistoricalContext,
@@ -101,15 +102,17 @@ class FakeIssueEnricher:
                     "small refactors."
                 ),
             ),
-            historical_context=HistoricalContext(
-                sample_size=6,
-                same_rule_matches=3,
-                same_scope_matches=6,
-                same_path_family_matches=6,
-                strong_match_count=4,
-                dominant_maintenance="cleanup",
-                dominant_maintenance_share=0.6667,
-                maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+            historical_context=CombinedHistoricalContext(
+                global_dataset=HistoricalContext(
+                    sample_size=6,
+                    same_rule_matches=3,
+                    same_scope_matches=6,
+                    same_path_family_matches=6,
+                    strong_match_count=4,
+                    dominant_maintenance="cleanup",
+                    dominant_maintenance_share=0.6667,
+                    maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+                )
             ),
         )
 
