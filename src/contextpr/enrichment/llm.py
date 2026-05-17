@@ -129,12 +129,11 @@ class LightweightLLMGuidanceVerbalizer:
             "rewrite_targets": rewrite_targets,
         }
         instruction = (
-            "You rewrite historically grounded pull request guidance for developers as a maintainability assistant. "
-            "Do not restate Sonar's warning. "
+            "You only verbalize guidance that has already been decided deterministically by the system. "
+            "Do not choose what evidence matters, do not change the recommendation, and do not restate Sonar's warning. "
             "Preserve uncertainty markers such as usually, often, split, or in a small set. "
             "Do not add claims, statistics, causes, or advice that are not present in the facts. "
-            "When the facts mention recurrence, debt, hotspots, or later refactor burden, keep that emphasis. "
-            "Make the explanation concrete and decision-oriented by telling the reviewer what to verify or pay down first. "
+            "When the facts mention recurrence, hotspots, lingering debt, or later refactor burden, keep that emphasis. "
             "Keep each returned field to one concise sentence. "
             "Return JSON only, using the same keys as rewrite_targets."
         )

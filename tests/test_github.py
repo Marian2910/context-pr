@@ -9,7 +9,9 @@ import pytest
 
 from contextpr.config import Settings
 from contextpr.integrations.github import (
+    LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
     LOCAL_GITHUB_SYNC_SOURCE,
+    GitHubCommitHistorySyncResult,
     GitHubClient,
     GitHubHistorySyncResult,
 )
@@ -277,6 +279,100 @@ def test_sync_repository_history_stops_when_it_reaches_existing_checkpoint(
     checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_SYNC_SOURCE)
     assert checkpoint is not None
     assert checkpoint.cursor == "2026-05-16T10:30:00Z"
+
+
+def test_sync_commit_history_persists_commits_touches_and_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    client = _client()
+
+    def fake_get_json(path: str) -> object:
+        if path.startswith("/repos/octo/example/commits?"):
+            return [
+                {"sha": "sha-2"},
+                {"sha": "sha-1"},
+            ]
+        if path == "/repos/octo/example/commits/sha-2":
+            return {
+                "sha": "sha-2",
+                "commit": {
+                    "message": "fix: patch behavior",
+                    "author": {"date": "2026-05-16T11:00:00Z"},
+                },
+                "files": [{"filename": "src/app.py"}],
+            }
+        if path == "/repos/octo/example/commits/sha-1":
+            return {
+                "sha": "sha-1",
+                "commit": {
+                    "message": "refactor: simplify handler",
+                    "author": {"date": "2026-05-16T10:00:00Z"},
+                },
+                "files": [{"filename": "src/other.py"}],
+            }
+        return {}
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+
+    result = client.sync_commit_history(store=store, repository_key="octo/example")
+
+    assert isinstance(result, GitHubCommitHistorySyncResult)
+    assert result.commits_upserted == 2
+    assert result.touches_recorded == 2
+    assert result.latest_commit_sha == "sha-2"
+    assert [commit.commit_sha for commit in store.list_git_commits("octo/example")] == ["sha-2", "sha-1"]
+    assert [touch.file_path for touch in store.list_git_file_touches("octo/example")] == [
+        "src/other.py",
+        "src/app.py",
+    ]
+    checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_COMMIT_SYNC_SOURCE)
+    assert checkpoint is not None
+    assert checkpoint.cursor == "sha-2"
+
+
+def test_sync_commit_history_stops_when_it_reaches_existing_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_sync_state(
+        SyncStateRecord(
+            repository_key="octo/example",
+            source_name=LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+            cursor="sha-1",
+            updated_at="2026-05-16T10:00:00Z",
+        )
+    )
+    client = _client()
+
+    def fake_get_json(path: str) -> object:
+        if path.startswith("/repos/octo/example/commits?"):
+            return [
+                {"sha": "sha-2"},
+                {"sha": "sha-1"},
+            ]
+        if path == "/repos/octo/example/commits/sha-2":
+            return {
+                "sha": "sha-2",
+                "commit": {
+                    "message": "fix: patch behavior",
+                    "author": {"date": "2026-05-16T11:00:00Z"},
+                },
+                "files": [{"filename": "src/app.py"}],
+            }
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+
+    result = client.sync_commit_history(store=store, repository_key="octo/example")
+
+    assert result.commits_upserted == 1
+    assert [commit.commit_sha for commit in store.list_git_commits("octo/example")] == ["sha-2"]
+    checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_COMMIT_SYNC_SOURCE)
+    assert checkpoint is not None
+    assert checkpoint.cursor == "sha-2"
 
 
 def _client() -> GitHubClient:

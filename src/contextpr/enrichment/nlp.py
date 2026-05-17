@@ -133,6 +133,7 @@ class IssueEnricher:
         guidance_verbalizer: GuidanceVerbalizer | None = None,
         *,
         enable_local_history: bool = False,
+        enable_local_git_history: bool = True,
         history_store: HistoryStore | None = None,
         repository_key: str | None = None,
     ) -> None:
@@ -146,7 +147,12 @@ class IssueEnricher:
         )
         self._local_git_history_retriever = (
             LocalGitHistoryRetriever(history_store, repository_key)
-            if enable_local_history and history_store is not None and repository_key is not None
+            if (
+                enable_local_history
+                and enable_local_git_history
+                and history_store is not None
+                and repository_key is not None
+            )
             else None
         )
         self._local_pr_history_retriever = (
@@ -166,29 +172,50 @@ class IssueEnricher:
                 "Local repository history mode requires a configured repository store."
             )
 
-        historical_context = CombinedHistoricalContext(
-            local_sonar=(
+        if self._enable_local_history:
+            local_sonar = self._actionable_or_none(
                 self._local_history_retriever.find_context(issue)
                 if self._local_history_retriever is not None
                 else None
-            ),
-            local_git=(
+            )
+            local_git = self._actionable_or_none(
                 self._local_git_history_retriever.find_context(issue)
                 if self._local_git_history_retriever is not None
                 else None
-            ),
-            local_prs=(
+            )
+            local_prs = self._actionable_or_none(
                 self._local_pr_history_retriever.find_context(issue)
                 if self._local_pr_history_retriever is not None
                 else None
-            ),
-            local_review_comments=(
+            )
+            local_review_comments = self._actionable_or_none(
                 self._local_review_comment_history_retriever.find_context(issue)
                 if self._local_review_comment_history_retriever is not None
                 else None
-            ),
-            global_dataset=self._global_history_retriever.find_context(issue),
-        )
+            )
+            historical_context = CombinedHistoricalContext(
+                local_sonar=local_sonar,
+                local_git=local_git,
+                local_prs=local_prs,
+                local_review_comments=local_review_comments,
+                global_dataset=None,
+            )
+            if historical_context.preferred_source_name() is None:
+                historical_context = CombinedHistoricalContext(
+                    local_sonar=local_sonar,
+                    local_git=local_git,
+                    local_prs=local_prs,
+                    local_review_comments=local_review_comments,
+                    global_dataset=self._actionable_or_none(
+                        self._global_history_retriever.find_context(issue)
+                    ),
+                )
+        else:
+            historical_context = CombinedHistoricalContext(
+                global_dataset=self._actionable_or_none(
+                    self._global_history_retriever.find_context(issue)
+                )
+            )
         active_history = self._active_history(historical_context)
         active_source = self._active_source(historical_context)
         guidance = self._build_guidance(issue, active_history, active_source)
@@ -217,6 +244,14 @@ class IssueEnricher:
             return None
         return historical_context.preferred_source_name()
 
+    @staticmethod
+    def _actionable_or_none(
+        historical_context: HistoricalContext | None,
+    ) -> HistoricalContext | None:
+        if not IssueEnricher._has_actionable_history(historical_context):
+            return None
+        return historical_context
+
     def _build_guidance(
         self,
         issue: SonarIssue,
@@ -224,7 +259,12 @@ class IssueEnricher:
         history_source: str | None,
     ) -> DeveloperGuidance | None:
         issue_pattern = self._issue_pattern(issue)
-        guidance_level = self._guidance_level(issue, issue_pattern, historical_context)
+        guidance_level = self._guidance_level(
+            issue,
+            issue_pattern,
+            historical_context,
+            history_source,
+        )
         if guidance_level is GuidanceLevel.NONE:
             return None
 
@@ -272,10 +312,17 @@ class IssueEnricher:
         issue: SonarIssue,
         issue_pattern: str,
         historical_context: HistoricalContext | None,
+        history_source: str | None,
     ) -> GuidanceLevel:
-        has_actionable_history = self._has_actionable_history(historical_context)
         if issue_pattern in TRIVIAL_PATTERNS:
-            return GuidanceLevel.MINIMAL if has_actionable_history else GuidanceLevel.NONE
+            return (
+                GuidanceLevel.MINIMAL
+                if self._should_surface_self_explanatory_history(
+                    historical_context,
+                    history_source,
+                )
+                else GuidanceLevel.NONE
+            )
 
         if issue_pattern == "duplicate_condition_branches":
             return (
@@ -288,7 +335,14 @@ class IssueEnricher:
             return GuidanceLevel.DETAILED
 
         if issue.issue_type == "CODE_SMELL":
-            return GuidanceLevel.DETAILED if has_actionable_history else GuidanceLevel.NONE
+            return (
+                GuidanceLevel.CONTEXTUAL
+                if self._should_comment_on_maintainability(
+                    historical_context,
+                    history_source,
+                )
+                else GuidanceLevel.NONE
+            )
 
         if self._has_grounded_history(historical_context):
             return GuidanceLevel.CONTEXTUAL
@@ -316,6 +370,13 @@ class IssueEnricher:
                 EXPLANATION_OPTIONS["correctness"],
             )
 
+        direct_explanation = self._issue_specific_maintainability_explanation(
+            issue,
+            issue_pattern,
+        )
+        if direct_explanation is not None:
+            return direct_explanation
+
         assert historical_context is not None
         return self._build_maintainability_explanation(historical_context, history_source)
 
@@ -340,19 +401,109 @@ class IssueEnricher:
                 NEXT_STEP_OPTIONS["behavior_risk"],
             )
 
+        if issue.issue_type == "CODE_SMELL":
+            return None
+
         assert historical_context is not None
         return self._build_maintainability_next_step(historical_context, history_source)
+
+    def _issue_specific_maintainability_explanation(
+        self,
+        issue: SonarIssue,
+        issue_pattern: str,
+    ) -> str | None:
+        if issue_pattern == "duplicate_condition_branches":
+            return (
+                "These branches currently do the same thing, so collapse them only if "
+                "the separation is not preserving a behavior difference."
+            )
+
+        if issue.issue_type != "CODE_SMELL":
+            return None
+
+        return self._normalize_issue_message(issue.message)
+
+    @staticmethod
+    def _normalize_issue_message(message: str) -> str:
+        normalized = " ".join(message.strip().split())
+        if not normalized:
+            return message
+        if normalized[-1] not in ".!?":
+            normalized = f"{normalized}."
+        return normalized
 
     def _build_evidence_note(
         self,
         historical_context: HistoricalContext | None,
         history_source: str | None,
     ) -> str | None:
-        if not self._has_actionable_history(historical_context):
+        if not self._should_surface_history(historical_context, history_source):
             return None
 
         assert historical_context is not None
         return self._build_maintainability_evidence_note(historical_context, history_source)
+
+    @staticmethod
+    def _is_local_history_source(history_source: str | None) -> bool:
+        return history_source in {
+            "local_sonar",
+            "local_git",
+            "local_prs",
+            "local_review_comments",
+        }
+
+    def _should_surface_self_explanatory_history(
+        self,
+        historical_context: HistoricalContext | None,
+        history_source: str | None,
+    ) -> bool:
+        if not self._is_local_history_source(history_source):
+            return False
+        if not self._has_actionable_history(historical_context):
+            return False
+
+        assert historical_context is not None
+        return self._maintainability_focus(historical_context) in {
+            "persistent_debt",
+            "accumulating_hotspot",
+        }
+
+    def _should_comment_on_maintainability(
+        self,
+        historical_context: HistoricalContext | None,
+        history_source: str | None,
+    ) -> bool:
+        if not self._has_actionable_history(historical_context):
+            return False
+
+        assert historical_context is not None
+        focus = self._maintainability_focus(historical_context)
+        if self._is_local_history_source(history_source):
+            return focus in {
+                "behavior_sensitive",
+                "persistent_debt",
+                "later_refactor",
+                "accumulating_hotspot",
+            }
+
+        return focus in {"behavior_sensitive", "persistent_debt"}
+
+    def _should_surface_history(
+        self,
+        historical_context: HistoricalContext | None,
+        history_source: str | None,
+    ) -> bool:
+        if not self._has_actionable_history(historical_context):
+            return False
+
+        if self._is_local_history_source(history_source):
+            return True
+
+        assert historical_context is not None
+        return self._maintainability_focus(historical_context) in {
+            "behavior_sensitive",
+            "persistent_debt",
+        }
 
     @staticmethod
     def _needs_duplicate_condition_context(
@@ -393,27 +544,26 @@ class IssueEnricher:
         focus = self._maintainability_focus(historical_context)
         if focus == "behavior_sensitive":
             return (
-                f"Historically similar cleanup in {location_subject} was often tied to "
-                "behavior-sensitive changes, so this is more than cosmetic maintenance."
+                f"Similar cleanup in {location_subject} often touched behavior-sensitive paths, "
+                "so check whether this structure is carrying intent before simplifying it."
             )
         if focus == "persistent_debt":
             return (
-                f"Historically similar smells in {location_subject} were often left open, "
-                "which suggests this kind of debt can accumulate over time."
+                f"Similar smells in {location_subject} often stayed around across later changes, "
+                "so this is worth deciding on while the code is already open."
             )
         if focus == "later_refactor":
             return (
-                f"Historically similar smells in {location_subject} were usually cleaned up during later refactors, "
-                "which suggests the cost often gets pushed into future work."
+                f"Similar smells in {location_subject} were often handled later during cleanup work "
+                "instead of immediately."
             )
         if focus == "accumulating_hotspot":
             return (
-                f"Similar smells have recurred in {location_subject}, "
-                "so this looks more like recurring maintenance debt than a one-off cleanup."
+                f"Similar smells have shown up more than once in {location_subject}, "
+                "so this is probably not a one-off cleanup."
             )
         return (
-            f"Historically similar cases in {location_subject} needed cleanup more than once, "
-            "so this is worth treating as recurring maintenance work while the code is already open."
+            f"Similar cases in {location_subject} have needed follow-up cleanup more than once."
         )
 
     def _build_maintainability_next_step(
@@ -425,25 +575,24 @@ class IssueEnricher:
         focus = self._maintainability_focus(historical_context)
         if focus == "behavior_sensitive":
             return (
-                "If you clean it up now, verify that the current structure is not preserving "
-                "behavior that earlier changes intentionally kept in place."
+                "If you simplify it, verify that the current structure is not preserving "
+                "a behavior difference."
             )
         if focus == "persistent_debt":
             return (
-                "If you're already touching this code, paying the debt down now is likely "
-                "better than carrying it into another maintenance pass."
+                "If you are already touching this code, either fix it now or leave a clear note "
+                "about why it is staying."
             )
         if focus == "later_refactor":
             return (
-                "If this code is already open, fixing it now may save a later refactor pass on similar code."
+                "If the cleanup is straightforward here, fixing it now may avoid another cleanup pass later."
             )
         if focus == "accumulating_hotspot":
             return (
-                "Use this touchpoint to remove or narrow the smell before it turns into another cleanup pass."
+                "Use this touchpoint to simplify or narrow the smell while the code is already open."
             )
         return (
-            "Consider addressing it in the current change or leaving an explicit note, "
-            "because historically similar smells have tended to come back as follow-up maintenance."
+            "Consider addressing it in this change or leaving an explicit note if it is staying for now."
         )
 
     def _build_maintainability_evidence_note(
@@ -451,18 +600,19 @@ class IssueEnricher:
         historical_context: HistoricalContext,
         history_source: str | None = None,
     ) -> str | None:
-        location_clause = self._evidence_location_clause(historical_context, history_source)
-        pattern_clause = self._evidence_pattern_clause(historical_context)
-        if location_clause and pattern_clause:
-            return f"{location_clause} and {pattern_clause}."
-        if location_clause:
-            return f"{location_clause}."
-        if pattern_clause:
-            return f"Historically similar cases {pattern_clause}."
+        evidence_subject = self._evidence_subject(historical_context, history_source)
+        evidence_pattern = self._evidence_pattern_clause(historical_context)
+        decision_support = self._decision_support_clause(historical_context, history_source)
+        if evidence_subject and evidence_pattern and decision_support:
+            return f"{evidence_subject} {evidence_pattern}, so {decision_support}."
+        if evidence_subject and evidence_pattern:
+            return f"{evidence_subject} {evidence_pattern}."
+        if decision_support:
+            return decision_support[:1].upper() + decision_support[1:] + "."
         return None
 
     @staticmethod
-    def _evidence_location_clause(
+    def _evidence_subject(
         historical_context: HistoricalContext,
         history_source: str | None = None,
     ) -> str | None:
@@ -473,20 +623,20 @@ class IssueEnricher:
             "local_review_comments",
         }:
             if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-                return "Similar issues in this repository have clustered in the same file"
+                return "Similar local cases in this file"
             if (
                 historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
                 and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
             ):
-                return "Similar issues in this repository have clustered in the same module area"
+                return "Similar local cases in this module area"
             return None
         if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-            return "Retrieved historical matches clustered around the same file path"
+            return "Historically similar matches for the same file path"
         if (
             historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
             and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
         ):
-            return "Retrieved historical matches clustered around similar module paths"
+            return "Historically similar matches for similar module paths"
         return None
 
     @staticmethod
@@ -507,10 +657,10 @@ class IssueEnricher:
                 and historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
             ):
                 if historical_context.dominant_disposition == "persistent":
-                    return "were often left open or deferred"
+                    return "often stayed unresolved across later changes"
                 if historical_context.dominant_disposition == "accepted":
                     return "were often kept as accepted debt"
-                return "usually ended up resolved in code"
+                return "were usually fixed"
 
         maintenance_distribution = historical_context.maintenance_distribution
         if not maintenance_distribution:
@@ -530,12 +680,30 @@ class IssueEnricher:
             historical_context.dominant_maintenance == "cleanup"
             and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
-            return "usually disappeared during later small refactors"
+            return "were usually fixed as small clean-ups"
         if (
             historical_context.dominant_maintenance == "behavior"
             and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
-            return "more often needed behavior-sensitive changes than quick cleanup"
+            return "more often needed behavior-aware follow-up than quick cleanup"
+        return None
+
+    def _decision_support_clause(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None = None,
+    ) -> str | None:
+        focus = self._maintainability_focus(historical_context)
+        if focus == "behavior_sensitive":
+            return "inspect the surrounding logic before simplifying it"
+        if focus == "persistent_debt":
+            if self._is_local_history_source(history_source):
+                return "decide explicitly whether to fix it now or leave it for follow-up"
+            return "it is worth deciding explicitly whether this should be fixed now"
+        if focus in {"later_refactor", "accumulating_hotspot"}:
+            if self._is_local_history_source(history_source):
+                return "this is probably worth resolving in this PR if the cleanup is small"
+            return None
         return None
 
     @staticmethod

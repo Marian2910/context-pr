@@ -17,6 +17,8 @@ from contextpr.models import (
     PullRequestRef,
 )
 from contextpr.persistence import (
+    GitCommitRecord,
+    GitFileTouchRecord,
     HistoryStore,
     PullRequestFileRecord,
     PullRequestRecord,
@@ -26,6 +28,7 @@ from contextpr.persistence import (
 
 logger = logging.getLogger(__name__)
 LOCAL_GITHUB_SYNC_SOURCE = "local_github_history"
+LOCAL_GITHUB_COMMIT_SYNC_SOURCE = "local_git_history"
 GITHUB_HISTORY_PAGE_SIZE = 50
 
 
@@ -38,6 +41,17 @@ class GitHubHistorySyncResult:
     files_recorded: int
     review_comments_recorded: int
     latest_update: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubCommitHistorySyncResult:
+    repository_key: str
+    pages_fetched: int
+    commits_seen: int
+    commits_upserted: int
+    touches_recorded: int
+    latest_commit_sha: str | None
+    latest_authored_at: str | None
 
 
 class GitHubClient:
@@ -169,6 +183,82 @@ class GitHubClient:
                 latest_update=latest_update,
             )
 
+    def sync_commit_history(
+        self,
+        *,
+        store: HistoryStore,
+        repository_key: str,
+        page_size: int = GITHUB_HISTORY_PAGE_SIZE,
+    ) -> GitHubCommitHistorySyncResult:
+        with store.acquire_repository_lock(repository_key):
+            previous_state = store.get_sync_state(repository_key, LOCAL_GITHUB_COMMIT_SYNC_SOURCE)
+            previous_cursor = previous_state.cursor if previous_state is not None else None
+            page_number = 1
+            pages_fetched = 0
+            commits_seen = 0
+            commits_upserted = 0
+            touches_recorded = 0
+            latest_commit_sha = previous_cursor
+            latest_authored_at = previous_state.updated_at if previous_state is not None else None
+
+            while True:
+                payload = self._get_json_list(
+                    f"/repos/{repository_key}/commits?per_page={page_size}&page={page_number}"
+                )
+                pages_fetched += 1
+                if not payload:
+                    break
+
+                should_stop = False
+                for item in payload:
+                    if not isinstance(item, Mapping):
+                        continue
+                    commit_sha = self._optional_string(item, "sha")
+                    if commit_sha is None:
+                        continue
+                    commits_seen += 1
+                    if previous_cursor and commit_sha == previous_cursor:
+                        should_stop = True
+                        break
+
+                    commit_payload = self._get_json_mapping(
+                        f"/repos/{repository_key}/commits/{commit_sha}"
+                    )
+                    mapped = self._map_commit_history(commit_payload)
+                    if mapped is None:
+                        continue
+                    commit_record, touches = mapped
+                    store.upsert_git_commit(repository_key, commit_record, touches=touches)
+                    commits_upserted += 1
+                    touches_recorded += len(touches)
+                    if commits_upserted == 1:
+                        latest_commit_sha = commit_record.commit_sha
+                        latest_authored_at = commit_record.authored_at
+
+                if latest_commit_sha is not None:
+                    store.upsert_sync_state(
+                        SyncStateRecord(
+                            repository_key=repository_key,
+                            source_name=LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+                            cursor=latest_commit_sha,
+                            updated_at=latest_authored_at,
+                        )
+                    )
+
+                if should_stop or len(payload) < page_size:
+                    break
+                page_number += 1
+
+            return GitHubCommitHistorySyncResult(
+                repository_key=repository_key,
+                pages_fetched=pages_fetched,
+                commits_seen=commits_seen,
+                commits_upserted=commits_upserted,
+                touches_recorded=touches_recorded,
+                latest_commit_sha=latest_commit_sha,
+                latest_authored_at=latest_authored_at,
+            )
+
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
@@ -240,6 +330,10 @@ class GitHubClient:
         payload = self._get_json(path)
         return payload if isinstance(payload, list) else []
 
+    def _get_json_mapping(self, path: str) -> Mapping[str, object]:
+        payload = self._get_json(path)
+        return payload if isinstance(payload, Mapping) else {}
+
     def _get_json(self, path: str) -> object:
         self._require_configured()
         with urlopen(self._request(path)) as response:
@@ -304,6 +398,77 @@ class GitHubClient:
             merged_at=self._optional_string(payload, "merged_at"),
             updated_at=self._optional_string(payload, "updated_at"),
         )
+
+    def _map_commit_history(
+        self,
+        payload: Mapping[str, object],
+    ) -> tuple[GitCommitRecord, tuple[GitFileTouchRecord, ...]] | None:
+        commit_sha = self._optional_string(payload, "sha")
+        commit_info = payload.get("commit")
+        if commit_sha is None or not isinstance(commit_info, Mapping):
+            return None
+
+        commit_message = self._optional_string(commit_info, "message")
+        author_info = commit_info.get("author")
+        authored_at = (
+            self._optional_string(author_info, "date")
+            if isinstance(author_info, Mapping)
+            else None
+        )
+        if commit_message is None or authored_at is None:
+            return None
+
+        files_payload = payload.get("files")
+        touches: tuple[GitFileTouchRecord, ...] = ()
+        if isinstance(files_payload, list):
+            touches = tuple(
+                GitFileTouchRecord(
+                    commit_sha=commit_sha,
+                    file_path=filename,
+                    module_family=self._module_family(filename),
+                )
+                for filename in (
+                    self._optional_string(item, "filename")
+                    for item in files_payload
+                    if isinstance(item, Mapping)
+                )
+                if filename is not None
+            )
+
+        return (
+            GitCommitRecord(
+                commit_sha=commit_sha,
+                authored_at=authored_at,
+                message=commit_message,
+                classification=self._classify_commit_message(commit_message),
+            ),
+            touches,
+        )
+
+    @staticmethod
+    def _classify_commit_message(message: str) -> str:
+        normalized = message.strip().lower()
+        if any(token in normalized for token in ("refactor", "cleanup", "simplif")):
+            return "refactor"
+        if any(token in normalized for token in ("fix", "bug", "hotfix")):
+            return "fix"
+        if any(token in normalized for token in ("test", "spec")):
+            return "test"
+        if any(token in normalized for token in ("doc", "readme")):
+            return "docs"
+        if any(token in normalized for token in ("build", "ci", "workflow", "pipeline")):
+            return "build"
+        return "unknown"
+
+    @staticmethod
+    def _module_family(file_path: str) -> str | None:
+        normalized = file_path.strip().replace("\\", "/")
+        if not normalized:
+            return None
+        parts = [segment for segment in normalized.split("/") if segment]
+        if len(parts) < 2:
+            return parts[0] if parts else None
+        return "/".join(parts[:2])
 
     @staticmethod
     def _review_comment_payload(comment: GitHubReviewComment) -> dict[str, object]:

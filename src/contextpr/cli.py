@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -13,7 +12,6 @@ from contextpr.enrichment import (
     LLMVerbalizerSettings,
     LightweightLLMGuidanceVerbalizer,
 )
-from contextpr.integrations.git_history import GitHistorySyncer
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -108,9 +106,10 @@ def analyze(
     github_client = GitHubClient(settings)
     sonar_client = SonarQubeClient(settings)
     history_store = HistoryStore(settings.local_history_db_path) if settings.local_history_enabled else None
+    local_git_enabled = False
     if settings.local_history_enabled:
         assert history_store is not None
-        _sync_local_history(
+        local_git_enabled = _sync_local_history(
             settings=settings,
             history_store=history_store,
             repository_key=pull_request.repository,
@@ -125,6 +124,7 @@ def analyze(
             dataset_path=settings.issue_dataset_path,
             guidance_verbalizer=verbalizer,
             enable_local_history=settings.local_history_enabled,
+            enable_local_git_history=local_git_enabled,
             history_store=history_store,
             repository_key=pull_request.repository if settings.local_history_enabled else None,
         ),
@@ -186,7 +186,7 @@ def _sync_local_history(
     repository_key: str,
     github_client: GitHubClient,
     sonar_client: SonarQubeClient,
-) -> None:
+) -> bool:
     sonar_sync_result = sonar_client.sync_project_issue_history(
         store=history_store,
         repository_key=repository_key,
@@ -202,14 +202,16 @@ def _sync_local_history(
             "latest_update": sonar_sync_result.latest_update,
         },
     )
-    git_sync_result = GitHistorySyncer(Path.cwd()).sync_repository_history(
+    git_sync_result = github_client.sync_commit_history(
         store=history_store,
         repository_key=repository_key,
     )
+    local_git_enabled = git_sync_result.commits_upserted > 0 or git_sync_result.latest_commit_sha is not None
     logger.info(
-        "Synchronized local Git history.",
+        "Synchronized repository commit history from GitHub.",
         extra={
             "repository": repository_key,
+            "pages_fetched": git_sync_result.pages_fetched,
             "commits_seen": git_sync_result.commits_seen,
             "commits_upserted": git_sync_result.commits_upserted,
             "touches_recorded": git_sync_result.touches_recorded,
@@ -233,3 +235,4 @@ def _sync_local_history(
             "latest_update": github_sync_result.latest_update,
         },
     )
+    return local_git_enabled

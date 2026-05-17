@@ -4,8 +4,7 @@ from typer.testing import CliRunner
 
 from contextpr.cli import app
 from contextpr.config import Settings
-from contextpr.integrations.git_history import GitHistorySyncResult
-from contextpr.integrations.github import GitHubHistorySyncResult
+from contextpr.integrations.github import GitHubCommitHistorySyncResult, GitHubHistorySyncResult
 from contextpr.integrations.sonarqube import SonarProjectHistorySyncResult
 from contextpr.models import PullRequestRef
 from contextpr.services import AnalysisResult
@@ -101,24 +100,21 @@ def test_analyze_syncs_local_history_when_enabled(
                 latest_update="2026-05-16T10:00:00+00:00",
             )
 
-    class FakeGitHistorySyncer:
-        def __init__(self, repository_path: Path) -> None:
-            self.repository_path = repository_path
+    class FakeGitHubClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
 
-        def sync_repository_history(self, *, store: object, repository_key: str) -> GitHistorySyncResult:
+        def sync_commit_history(self, *, store: object, repository_key: str) -> GitHubCommitHistorySyncResult:
             sync_calls.append(f"git:{repository_key}")
-            return GitHistorySyncResult(
+            return GitHubCommitHistorySyncResult(
                 repository_key=repository_key,
+                pages_fetched=1,
                 commits_seen=3,
                 commits_upserted=3,
                 touches_recorded=4,
                 latest_commit_sha="abc123",
                 latest_authored_at="2026-05-16T09:00:00+00:00",
             )
-
-    class FakeGitHubClient:
-        def __init__(self, settings: object) -> None:
-            self.settings = settings
 
         def sync_repository_history(self, *, store: object, repository_key: str) -> GitHubHistorySyncResult:
             sync_calls.append(f"github:{repository_key}")
@@ -142,7 +138,6 @@ def test_analyze_syncs_local_history_when_enabled(
     monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
     monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
     monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
-    monkeypatch.setattr("contextpr.cli.GitHistorySyncer", FakeGitHistorySyncer)
     monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
 
     result = runner.invoke(app, ["analyze", "--pr-number", "123", "--dry-run"])
@@ -169,24 +164,21 @@ def test_sync_history_command_runs_all_local_syncers(
                 latest_update="2026-05-16T10:00:00+00:00",
             )
 
-    class FakeGitHistorySyncer:
-        def __init__(self, repository_path: Path) -> None:
-            self.repository_path = repository_path
+    class FakeGitHubClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
 
-        def sync_repository_history(self, *, store: object, repository_key: str) -> GitHistorySyncResult:
+        def sync_commit_history(self, *, store: object, repository_key: str) -> GitHubCommitHistorySyncResult:
             sync_calls.append("git")
-            return GitHistorySyncResult(
+            return GitHubCommitHistorySyncResult(
                 repository_key=repository_key,
+                pages_fetched=1,
                 commits_seen=1,
                 commits_upserted=1,
                 touches_recorded=1,
                 latest_commit_sha="abc123",
                 latest_authored_at="2026-05-16T09:00:00+00:00",
             )
-
-    class FakeGitHubClient:
-        def __init__(self, settings: object) -> None:
-            self.settings = settings
 
         def sync_repository_history(self, *, store: object, repository_key: str) -> GitHubHistorySyncResult:
             sync_calls.append("github")
@@ -209,7 +201,6 @@ def test_sync_history_command_runs_all_local_syncers(
     )
     monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
     monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
-    monkeypatch.setattr("contextpr.cli.GitHistorySyncer", FakeGitHistorySyncer)
 
     result = runner.invoke(app, ["sync-history"])
 

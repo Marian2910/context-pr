@@ -259,10 +259,13 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
 
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert "preserving behavior" in (enrichment.guidance.next_step or "")
+    assert enrichment.guidance.explanation == (
+        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
+    )
+    assert enrichment.guidance.next_step is None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and small refactors."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -383,14 +386,7 @@ def test_issue_enricher_uses_minimal_history_note_for_trivial_issue(
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.level is GuidanceLevel.MINIMAL
-    assert enrichment.guidance.explanation is None
-    assert enrichment.guidance.next_step is None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually disappeared "
-        "during later small refactors."
-    )
+    assert enrichment is None
 
 
 def test_issue_enricher_skips_llm_for_minimal_guidance(
@@ -430,8 +426,7 @@ def test_issue_enricher_skips_llm_for_minimal_guidance(
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.level is GuidanceLevel.MINIMAL
+    assert enrichment is None
     assert verbalizer.calls == 0
 
 
@@ -510,11 +505,7 @@ def test_issue_enricher_wraps_dataset_history_as_global_context(
 
     enrichment = IssueEnricher(dataset_path=dataset_path).enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.historical_context is not None
-    assert enrichment.historical_context.global_dataset is not None
-    assert enrichment.historical_context.local_sonar is None
-    assert enrichment.historical_context.preferred_evidence() is enrichment.historical_context.global_dataset
+    assert enrichment is None
 
 
 def test_issue_enricher_requires_store_when_local_history_is_enabled(tmp_path: Path) -> None:
@@ -555,8 +546,8 @@ def test_issue_enricher_uses_local_sonar_history_when_available(tmp_path: Path) 
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
     assert enrichment.guidance.evidence_note == (
-        "Similar issues in this repository have clustered in the same file and usually ended up "
-        "resolved in code."
+        "Similar local cases in this file were usually fixed, so this is probably worth resolving "
+        "in this PR if the cleanup is small."
     )
 
 
@@ -637,15 +628,14 @@ def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
     assert enrichment is not None
     assert enrichment.historical_context is not None
     assert enrichment.historical_context.local_sonar is not None
-    assert enrichment.historical_context.global_dataset is not None
+    assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
     assert enrichment.guidance.explanation == (
-        "Historically similar smells in this file were often left open, which suggests this kind "
-        "of debt can accumulate over time."
+        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
     )
     assert enrichment.guidance.evidence_note == (
-        "Similar issues in this repository have clustered in the same file and were often left "
-        "open or deferred."
+        "Similar local cases in this file often stayed unresolved across later changes, so decide "
+        "explicitly whether to fix it now or leave it for follow-up."
     )
 
 
@@ -691,15 +681,106 @@ def test_issue_enricher_uses_local_git_history_when_local_sonar_is_too_weak(
         repository_key="octo/example",
     ).enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.historical_context is not None
-    assert enrichment.historical_context.local_sonar is None
-    assert enrichment.historical_context.local_git is not None
-    assert enrichment.historical_context.preferred_source_name() == "local_git"
-    assert enrichment.guidance.evidence_note == (
-        "Similar issues in this repository have clustered in the same file and usually "
-        "disappeared during later small refactors."
+    assert enrichment is None
+
+
+def test_issue_enricher_uses_global_dataset_only_as_fallback_when_local_history_is_weak(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-01"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-02"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-03"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-04"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
     )
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_sonar_issue(
+        "octo/example",
+        SonarIssueRecord(
+            issue_key="weak-local-history",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            status="OPEN",
+            updated_at="2026-05-10T10:00:00+00:00",
+        ),
+    )
+
+    enrichment = IssueEnricher(
+        dataset_path=dataset_path,
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is None
+
+
+def test_issue_enricher_can_disable_local_git_history_even_when_git_data_exists(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_git_commit(
+            "octo/example",
+            GitCommitRecord(
+                commit_sha=f"commit-{index}",
+                authored_at=f"2026-05-1{index}T09:00:00+00:00",
+                message=f"refactor: simplify handler {index}",
+                classification="refactor",
+            ),
+            touches=(
+                GitFileTouchRecord(
+                    commit_sha=f"commit-{index}",
+                    file_path="src/app.py",
+                    module_family="src/app.py",
+                ),
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        enable_local_git_history=False,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is None
 
 
 def test_issue_enricher_can_fall_back_to_review_comment_history(
@@ -779,8 +860,8 @@ def test_issue_enricher_can_fall_back_to_review_comment_history(
     assert enrichment.historical_context.local_review_comments is not None
     assert enrichment.historical_context.preferred_source_name() == "local_review_comments"
     assert enrichment.guidance.evidence_note == (
-        "Similar issues in this repository have clustered in the same file and more often "
-        "needed behavior-sensitive changes than quick cleanup."
+        "Similar local cases in this file more often needed behavior-aware follow-up than quick "
+        "cleanup, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -826,11 +907,7 @@ def test_issue_enricher_uses_confidence_aware_history_wording(
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually disappeared "
-        "during later small refactors."
-    )
+    assert enrichment is None
 
 
 def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
@@ -877,8 +954,8 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and small refactors."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -925,11 +1002,7 @@ def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Pat
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually ended up "
-        "resolved in code."
-    )
+    assert enrichment is None
 
 
 def test_lightweight_llm_verbalizer_rewrites_existing_guidance(
@@ -1157,8 +1230,8 @@ def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and nearby follow-up changes."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and nearby follow-up changes, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -1197,7 +1270,7 @@ def test_lightweight_llm_verbalizer_falls_back_when_request_fails(
     guidance = DeveloperGuidance(
         level=GuidanceLevel.DETAILED,
         explanation="Check whether the branch difference is intentional.",
-        evidence_note="Historically similar cases usually disappeared during later small refactors.",
+        evidence_note="Historically similar cases were often handled later during small refactors.",
     )
 
     def fail_urlopen(*_args: object, **_kwargs: object) -> object:
@@ -1349,9 +1422,9 @@ def test_lightweight_llm_verbalizer_helper_branches() -> None:
         verbalizer._pick_rewrite(
             {"evidence_note": "Similar cases required cleanup."},
             "evidence_note",
-            "Historically similar cases usually disappeared during later small refactors.",
+            "Historically similar cases were often handled later during small refactors.",
         )
-        == "Historically similar cases usually disappeared during later small refactors."
+        == "Historically similar cases were often handled later during small refactors."
     )
 
 
