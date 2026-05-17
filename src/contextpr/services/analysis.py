@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Protocol
 
 from contextpr.enrichment import IssueEnrichment
@@ -13,6 +14,7 @@ from contextpr.models import (
 )
 
 COMMENT_MARKER_PREFIX = "<!-- contextpr:issue="
+TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,16 +178,40 @@ class AnalysisService:
                 sections.append(guidance.evidence_note)
             return " ".join(sections)
 
-        sections = [
-            section
-            for section in (
-                guidance.explanation,
-                guidance.next_step,
-                guidance.evidence_note,
-            )
-            if section is not None
-        ]
-        return "\n\n".join(sections) if sections else issue.message
+        sections = AnalysisService._deduplicated_sections(
+            guidance.explanation,
+            guidance.next_step,
+            guidance.evidence_note,
+        )
+        return " ".join(sections[:2]) if sections else issue.message
+
+    @staticmethod
+    def _deduplicated_sections(*sections: str | None) -> list[str]:
+        kept_sections: list[str] = []
+        for section in sections:
+            if section is None:
+                continue
+            normalized = section.strip()
+            if not normalized:
+                continue
+            if any(
+                AnalysisService._sections_overlap(normalized, existing)
+                for existing in kept_sections
+            ):
+                continue
+            kept_sections.append(normalized)
+        return kept_sections
+
+    @staticmethod
+    def _sections_overlap(left: str, right: str) -> bool:
+        left_tokens = set(TOKEN_PATTERN.findall(left.lower()))
+        right_tokens = set(TOKEN_PATTERN.findall(right.lower()))
+        if not left_tokens or not right_tokens:
+            return False
+
+        overlap = len(left_tokens & right_tokens)
+        smaller_size = min(len(left_tokens), len(right_tokens))
+        return overlap / smaller_size >= 0.6
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()

@@ -31,7 +31,9 @@ def test_settings_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch
     assert settings.github_enabled is True
     assert settings.sonar_enabled is True
     assert str(settings.issue_dataset_path) == "dataset/curated_issues_data.xlsx"
+    assert settings.local_history_db_path.name == "history.db"
     assert settings.llm_enabled is False
+    assert settings.local_history_enabled is False
     assert settings.log_level == "DEBUG"
 
 
@@ -95,3 +97,25 @@ def test_llm_timeout_uses_updated_default() -> None:
     settings = Settings.from_env({})
 
     assert settings.llm_timeout_seconds == 15.0
+
+
+def test_local_history_flag_can_be_enabled_from_env() -> None:
+    settings = Settings.from_env({"CONTEXTPR_ENABLE_LOCAL_HISTORY": "true"})
+
+    assert settings.local_history_enabled is True
+
+
+def test_local_history_db_path_uses_env_override() -> None:
+    settings = Settings.from_env(
+        {
+            "CONTEXTPR_LOCAL_HISTORY_DB_PATH": "~/contextpr/history.sqlite3",
+        }
+    )
+
+    assert settings.local_history_db_path.name == "history.sqlite3"
+    assert settings.local_history_db_path.is_absolute() is True
+
+
+def test_invalid_local_history_flag_raises_configuration_error() -> None:
+    with pytest.raises(ConfigurationError, match="Invalid boolean value"):
+        Settings.from_env({"CONTEXTPR_ENABLE_LOCAL_HISTORY": "sometimes"})

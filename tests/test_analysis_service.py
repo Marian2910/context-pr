@@ -1,4 +1,5 @@
 from contextpr.enrichment import (
+    CombinedHistoricalContext,
     DeveloperGuidance,
     GuidanceLevel,
     HistoricalContext,
@@ -101,15 +102,17 @@ class FakeIssueEnricher:
                     "small refactors."
                 ),
             ),
-            historical_context=HistoricalContext(
-                sample_size=6,
-                same_rule_matches=3,
-                same_scope_matches=6,
-                same_path_family_matches=6,
-                strong_match_count=4,
-                dominant_maintenance="cleanup",
-                dominant_maintenance_share=0.6667,
-                maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+            historical_context=CombinedHistoricalContext(
+                global_dataset=HistoricalContext(
+                    sample_size=6,
+                    same_rule_matches=3,
+                    same_scope_matches=6,
+                    same_path_family_matches=6,
+                    strong_match_count=4,
+                    dominant_maintenance="cleanup",
+                    dominant_maintenance_share=0.6667,
+                    maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+                )
             ),
         )
 
@@ -140,7 +143,7 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert "Sonar reported" not in comments[0].body
     assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
     assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
-    assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
+    assert "Historically similar cases usually disappeared during later small refactors." not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -242,6 +245,59 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
         "Historically similar cases usually disappeared during later small refactors."
     )
     assert single_sentence_note == "Capture `prefix` when the lambda is created."
+
+
+def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
+    note = AnalysisService._reviewer_note(
+        SonarIssue(
+            key="issue-loop",
+            rule="python:S1515",
+            severity="MAJOR",
+            message="Loop variable capture",
+            location=IssueLocation(path="src/app.py", line=20),
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
+                explanation=(
+                    "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here."
+                ),
+                next_step=(
+                    "Pass `prefix` into the lambda as a default argument so later loop iterations do not change the value it sees here."
+                ),
+            ),
+            historical_context=None,
+        ),
+    )
+
+    assert note == (
+        "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here."
+    )
+
+
+def test_reviewer_note_falls_back_to_issue_message_when_guidance_sections_are_empty() -> None:
+    issue = SonarIssue(
+        key="issue-empty",
+        rule="python:S9999",
+        severity="MINOR",
+        message="Use a clearer name.",
+        location=IssueLocation(path="src/app.py", line=9),
+    )
+
+    note = AnalysisService._reviewer_note(
+        issue,
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                explanation="   ",
+                next_step=None,
+                evidence_note=None,
+            ),
+            historical_context=None,
+        ),
+    )
+
+    assert note == "Use a clearer name."
 
 
 def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:

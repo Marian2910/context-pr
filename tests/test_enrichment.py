@@ -5,15 +5,27 @@ from urllib import error
 import pytest
 
 from contextpr.enrichment import (
+    CombinedHistoricalContext,
     DeveloperGuidance,
+    GlobalDatasetHistoryRetriever,
     GuidanceLevel,
     HistoricalContext,
     IssueEnricher,
-    IssueHistoryRetriever,
+    IssueContextEvidence,
     LLMVerbalizerSettings,
+    LocalPullRequestHistoryRetriever,
     LightweightLLMGuidanceVerbalizer,
 )
 from contextpr.models import IssueLocation, SonarIssue
+from contextpr.persistence import (
+    GitCommitRecord,
+    GitFileTouchRecord,
+    HistoryStore,
+    PullRequestFileRecord,
+    PullRequestRecord,
+    PullRequestReviewCommentRecord,
+    SonarIssueRecord,
+)
 
 
 def test_history_retriever_summarizes_similar_issues(tmp_path: Path) -> None:
@@ -46,7 +58,7 @@ def test_history_retriever_summarizes_similar_issues(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    retriever = IssueHistoryRetriever(dataset_path)
+    retriever = GlobalDatasetHistoryRetriever(dataset_path)
     context = retriever.find_context(
         SonarIssue(
             key="issue-1",
@@ -249,15 +261,18 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
 
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert "preserving behavior" in (enrichment.guidance.next_step or "")
+    assert enrichment.guidance.explanation == (
+        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
+    )
+    assert enrichment.guidance.next_step is None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and small refactors."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
     )
 
 
 def test_history_retriever_returns_none_when_dataset_is_missing(tmp_path: Path) -> None:
-    retriever = IssueHistoryRetriever(tmp_path / "missing.csv")
+    retriever = GlobalDatasetHistoryRetriever(tmp_path / "missing.csv")
 
     assert retriever.find_context(_issue()) is None
 
@@ -281,7 +296,7 @@ def test_history_retriever_handles_dataset_without_creation_date(tmp_path: Path)
         ),
         encoding="utf-8",
     )
-    retriever = IssueHistoryRetriever(dataset_path)
+    retriever = GlobalDatasetHistoryRetriever(dataset_path)
 
     context = retriever.find_context(_issue())
 
@@ -292,7 +307,7 @@ def test_history_retriever_handles_dataset_without_creation_date(tmp_path: Path)
 def test_history_retriever_rejects_unsupported_dataset_format(tmp_path: Path) -> None:
     dataset_path = tmp_path / "issues.json"
     dataset_path.write_text("[]", encoding="utf-8")
-    retriever = IssueHistoryRetriever(dataset_path)
+    retriever = GlobalDatasetHistoryRetriever(dataset_path)
 
     with pytest.raises(ValueError, match="Unsupported dataset format"):
         retriever.find_context(_issue())
@@ -317,7 +332,7 @@ def test_history_retriever_returns_none_when_no_rows_match(tmp_path: Path) -> No
         ),
         encoding="utf-8",
     )
-    retriever = IssueHistoryRetriever(dataset_path)
+    retriever = GlobalDatasetHistoryRetriever(dataset_path)
 
     assert retriever.find_context(_issue()) is None
 
@@ -373,14 +388,7 @@ def test_issue_enricher_uses_minimal_history_note_for_trivial_issue(
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.level is GuidanceLevel.MINIMAL
-    assert enrichment.guidance.explanation is None
-    assert enrichment.guidance.next_step is None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually disappeared "
-        "during later small refactors."
-    )
+    assert enrichment is None
 
 
 def test_issue_enricher_skips_llm_for_minimal_guidance(
@@ -420,9 +428,585 @@ def test_issue_enricher_skips_llm_for_minimal_guidance(
 
     enrichment = enricher.enrich(_issue())
 
+    assert enrichment is None
+    assert verbalizer.calls == 0
+
+
+def test_combined_historical_context_prefers_local_sources_before_global() -> None:
+    local_history = IssueContextEvidence(
+        sample_size=2,
+        same_rule_matches=2,
+        same_scope_matches=2,
+        same_path_family_matches=2,
+        strong_match_count=2,
+        dominant_maintenance="behavior",
+        dominant_maintenance_share=1.0,
+        maintenance_distribution=(("behavior", 2),),
+    )
+    global_history = IssueContextEvidence(
+        sample_size=5,
+        same_rule_matches=4,
+        same_scope_matches=5,
+        same_path_family_matches=5,
+        strong_match_count=4,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=0.8,
+        maintenance_distribution=(("cleanup", 4), ("behavior", 1)),
+    )
+
+    combined = CombinedHistoricalContext(
+        local_sonar=local_history,
+        global_dataset=global_history,
+    )
+
+    assert combined.preferred_evidence() is local_history
+    assert combined.preferred_source_name() == "local_sonar"
+
+
+def test_issue_enricher_wraps_dataset_history_as_global_context(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-01"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-02"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-03"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-04"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(_issue())
+
+    assert enrichment is None
+
+
+def test_issue_enricher_requires_store_when_local_history_is_enabled(tmp_path: Path) -> None:
+    enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv", enable_local_history=True)
+
+    with pytest.raises(NotImplementedError, match="configured repository store"):
+        enricher.enrich(_issue())
+
+
+def test_issue_enricher_uses_local_sonar_history_when_available(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"issue-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2026-05-1{index}T10:00:00+00:00",
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is not None
+    assert enrichment.historical_context is not None
+    assert enrichment.historical_context.local_sonar is not None
+    assert enrichment.historical_context.global_dataset is None
+    assert enrichment.historical_context.preferred_source_name() == "local_sonar"
+    assert enrichment.guidance.evidence_note == (
+        "Similar local cases in this file were usually fixed, so this is probably worth resolving "
+        "in this PR if the cleanup is small."
+    )
+
+
+def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,2024-02-01"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,2024-02-02"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,2024-02-03"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,2024-02-04"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,2024-02-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"local-{index}",
+                rule="python:S3923",
+                issue_type="CODE_SMELL",
+                severity="MAJOR",
+                component="src/app.py",
+                message="Remove this if statement or edit its code blocks so that they're not all the same.",
+                status="OPEN",
+                updated_at=f"2026-05-1{index}T10:00:00+00:00",
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=dataset_path,
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(
+        SonarIssue(
+            key="issue-local-preferred",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.historical_context is not None
+    assert enrichment.historical_context.local_sonar is not None
+    assert enrichment.historical_context.global_dataset is None
+    assert enrichment.historical_context.preferred_source_name() == "local_sonar"
+    assert enrichment.guidance.explanation == (
+        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
+    )
+    assert enrichment.guidance.evidence_note == (
+        "Similar local cases in this file often stayed unresolved across later changes, so decide "
+        "explicitly whether to fix it now or leave it for follow-up."
+    )
+
+
+def test_issue_enricher_uses_local_git_history_when_local_sonar_is_too_weak(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_sonar_issue(
+        "octo/example",
+        SonarIssueRecord(
+            issue_key="same-rule-history",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            status="OPEN",
+            updated_at="2026-05-10T10:00:00+00:00",
+        ),
+    )
+    for index in range(1, 6):
+        store.upsert_git_commit(
+            "octo/example",
+            GitCommitRecord(
+                commit_sha=f"commit-{index}",
+                authored_at=f"2026-05-1{index}T09:00:00+00:00",
+                message=f"refactor: simplify handler {index}",
+                classification="refactor",
+            ),
+            touches=(
+                GitFileTouchRecord(
+                    commit_sha=f"commit-{index}",
+                    file_path="src/app.py",
+                    module_family="src/app.py",
+                ),
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is None
+
+
+def test_issue_enricher_uses_global_dataset_only_as_fallback_when_local_history_is_weak(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,creation_date"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-01"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-02"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-03"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-04"
+                ),
+                (
+                    "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
+                    "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
+                    "repo:src/app.py,refactor,2024-01-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_sonar_issue(
+        "octo/example",
+        SonarIssueRecord(
+            issue_key="weak-local-history",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            status="OPEN",
+            updated_at="2026-05-10T10:00:00+00:00",
+        ),
+    )
+
+    enrichment = IssueEnricher(
+        dataset_path=dataset_path,
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is None
+
+
+def test_issue_enricher_can_disable_local_git_history_even_when_git_data_exists(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_git_commit(
+            "octo/example",
+            GitCommitRecord(
+                commit_sha=f"commit-{index}",
+                authored_at=f"2026-05-1{index}T09:00:00+00:00",
+                message=f"refactor: simplify handler {index}",
+                classification="refactor",
+            ),
+            touches=(
+                GitFileTouchRecord(
+                    commit_sha=f"commit-{index}",
+                    file_path="src/app.py",
+                    module_family="src/app.py",
+                ),
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        enable_local_git_history=False,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is None
+
+
+def test_issue_enricher_can_fall_back_to_review_comment_history(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_pull_request(
+        "octo/example",
+        PullRequestRecord(
+            pr_number=5,
+            title="Review semantics",
+            updated_at="2026-05-16T10:00:00Z",
+        ),
+        review_comments=(
+            PullRequestReviewCommentRecord(
+                comment_id=11,
+                pr_number=5,
+                body="Please verify that this is behavior-sensitive before collapsing these branches.",
+                file_path="src/app.py",
+                line=12,
+                author_role="reviewer",
+            ),
+            PullRequestReviewCommentRecord(
+                comment_id=12,
+                pr_number=5,
+                body="This looks behavior-sensitive, so confirm the current semantics first.",
+                file_path="src/app.py",
+                line=14,
+                author_role="reviewer",
+            ),
+            PullRequestReviewCommentRecord(
+                comment_id=13,
+                pr_number=5,
+                body="Before refactoring this, treat the duplicated branches as behavior-sensitive and preserve semantics.",
+                file_path="src/app.py",
+                line=16,
+                author_role="reviewer",
+            ),
+            PullRequestReviewCommentRecord(
+                comment_id=14,
+                pr_number=5,
+                body="This should be treated as behavior-sensitive until the current outcome is verified.",
+                file_path="src/app.py",
+                line=18,
+                author_role="reviewer",
+            ),
+            PullRequestReviewCommentRecord(
+                comment_id=15,
+                pr_number=5,
+                body="Please confirm the existing behavior-sensitive path before simplifying the condition.",
+                file_path="src/app.py",
+                line=20,
+                author_role="reviewer",
+            ),
+        ),
+    )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(
+        SonarIssue(
+            key="review-fallback",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.historical_context is not None
+    assert enrichment.historical_context.local_review_comments is not None
+    assert enrichment.historical_context.preferred_source_name() == "local_review_comments"
+    assert enrichment.guidance.evidence_note == (
+        "Similar local cases in this file more often needed behavior-aware follow-up than quick "
+        "cleanup, so inspect the surrounding logic before simplifying it."
+    )
+
+
+def test_local_pull_request_history_retriever_finds_strong_same_file_signal(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for pr_number in range(1, 4):
+        store.upsert_pull_request(
+            "octo/example",
+            PullRequestRecord(
+                pr_number=pr_number,
+                title=f"Refactor handler {pr_number}",
+                body="cleanup pass",
+                updated_at=f"2026-05-1{pr_number}T10:00:00Z",
+            ),
+            files=(
+                PullRequestFileRecord(pr_number=pr_number, file_path="src/app.py"),
+            ),
+        )
+    for index in range(1, 4):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"issue-{index}",
+                rule="python:S3923",
+                issue_type="CODE_SMELL",
+                severity="MAJOR",
+                component="src/app.py",
+                message="Remove this if statement or edit its code blocks so that they're not all the same.",
+                status="OPEN",
+                updated_at=f"2026-05-1{index}T12:00:00+00:00",
+            ),
+        )
+
+    context = LocalPullRequestHistoryRetriever(store, "octo/example").find_context(
+        SonarIssue(
+            key="pr-history",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert context is not None
+    assert context.same_exact_path_matches == 3
+    assert context.dominant_maintenance == "cleanup"
+
+
+def test_issue_enricher_surfaces_local_sonar_history_for_recurrent_trivial_smell(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"recurrent-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2026-05-1{index}T10:00:00+00:00",
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.MINIMAL
-    assert verbalizer.calls == 0
+    assert enrichment.guidance.evidence_note is not None
+    assert "worth resolving in this PR" in enrichment.guidance.evidence_note
+
+
+def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,status,creation_date"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-01"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-02"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-03"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-04"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(
+        SonarIssue(
+            key="issue-persistent-global",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.evidence_note is not None
+    assert "worth deciding explicitly" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_rule_id_before_message_text(tmp_path: Path) -> None:
@@ -467,11 +1051,7 @@ def test_issue_enricher_uses_confidence_aware_history_wording(
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually disappeared "
-        "during later small refactors."
-    )
+    assert enrichment is None
 
 
 def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
@@ -518,8 +1098,8 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and small refactors."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -566,11 +1146,7 @@ def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Pat
 
     enrichment = enricher.enrich(_issue())
 
-    assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and usually ended up "
-        "resolved in code."
-    )
+    assert enrichment is None
 
 
 def test_lightweight_llm_verbalizer_rewrites_existing_guidance(
@@ -798,8 +1374,8 @@ def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
 
     assert enrichment is not None
     assert enrichment.guidance.evidence_note == (
-        "Retrieved historical matches clustered around the same file path and were split between "
-        "behavior-sensitive changes and nearby follow-up changes."
+        "Historically similar matches for the same file path were split between "
+        "behavior-sensitive changes and nearby follow-up changes, so inspect the surrounding logic before simplifying it."
     )
 
 
@@ -838,7 +1414,7 @@ def test_lightweight_llm_verbalizer_falls_back_when_request_fails(
     guidance = DeveloperGuidance(
         level=GuidanceLevel.DETAILED,
         explanation="Check whether the branch difference is intentional.",
-        evidence_note="Historically similar cases usually disappeared during later small refactors.",
+        evidence_note="Historically similar cases were often handled later during small refactors.",
     )
 
     def fail_urlopen(*_args: object, **_kwargs: object) -> object:
@@ -990,9 +1566,9 @@ def test_lightweight_llm_verbalizer_helper_branches() -> None:
         verbalizer._pick_rewrite(
             {"evidence_note": "Similar cases required cleanup."},
             "evidence_note",
-            "Historically similar cases usually disappeared during later small refactors.",
+            "Historically similar cases were often handled later during small refactors.",
         )
-        == "Historically similar cases usually disappeared during later small refactors."
+        == "Historically similar cases were often handled later during small refactors."
     )
 
 
