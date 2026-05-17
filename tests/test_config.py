@@ -114,3 +114,8 @@ def test_local_history_db_path_uses_env_override() -> None:
 
     assert settings.local_history_db_path.name == "history.sqlite3"
     assert settings.local_history_db_path.is_absolute() is True
+
+
+def test_invalid_local_history_flag_raises_configuration_error() -> None:
+    with pytest.raises(ConfigurationError, match="Invalid boolean value"):
+        Settings.from_env({"CONTEXTPR_ENABLE_LOCAL_HISTORY": "sometimes"})

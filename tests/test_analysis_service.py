@@ -275,6 +275,31 @@ def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
     )
 
 
+def test_reviewer_note_falls_back_to_issue_message_when_guidance_sections_are_empty() -> None:
+    issue = SonarIssue(
+        key="issue-empty",
+        rule="python:S9999",
+        severity="MINOR",
+        message="Use a clearer name.",
+        location=IssueLocation(path="src/app.py", line=9),
+    )
+
+    note = AnalysisService._reviewer_note(
+        issue,
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                explanation="   ",
+                next_step=None,
+                evidence_note=None,
+            ),
+            historical_context=None,
+        ),
+    )
+
+    assert note == "Use a clearer name."
+
+
 def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:
     assert AnalysisService._comment_start_line(
         SonarIssue(

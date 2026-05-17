@@ -260,3 +260,34 @@ def test_sync_project_issue_history_stops_when_it_reaches_existing_checkpoint(
     checkpoint = store.get_sync_state("octo/example", LOCAL_SONAR_SYNC_SOURCE)
     assert checkpoint is not None
     assert checkpoint.cursor == "2026-05-16T12:00:00+0000"
+
+
+def test_sync_project_issue_record_skips_observation_when_no_timestamp(tmp_path: Path) -> None:
+    client = SonarQubeClient(
+        Settings(
+            sonar_token="sonar-token",
+            sonar_project_key="contextpr",
+        )
+    )
+    store = HistoryStore(tmp_path / "history.db")
+
+    recorded = client._sync_project_issue_record(
+        store=store,
+        repository_key="octo/example",
+        raw_issue={
+            "key": "issue-no-dates",
+            "rule": "python:S1172",
+            "severity": "MAJOR",
+            "message": "Remove the unused parameter.",
+            "type": "CODE_SMELL",
+            "component": "project:src/app.py",
+            "status": "OPEN",
+            "textRange": {"startLine": 10, "endLine": 10},
+        },
+        updated_at=None,
+    )
+
+    assert recorded == 0
+    assert [issue.issue_key for issue in store.list_sonar_issues("octo/example")] == [
+        "issue-no-dates"
+    ]

@@ -375,6 +375,35 @@ def test_sync_commit_history_stops_when_it_reaches_existing_checkpoint(
     assert checkpoint.cursor == "sha-2"
 
 
+def test_sync_commit_record_returns_none_when_commit_payload_cannot_be_mapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    client = _client()
+
+    monkeypatch.setattr(
+        client,
+        "_get_json_mapping",
+        lambda _path: {"sha": "sha-1", "commit": {}, "files": []},
+    )
+
+    assert client._sync_commit_record(store, "octo/example", "sha-1") is None
+
+
+def test_sync_pull_request_record_returns_none_when_payload_is_invalid(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    client = _client()
+
+    assert client._sync_pull_request_record(
+        store,
+        "octo/example",
+        {"updated_at": "2026-05-16T10:00:00Z"},
+    ) is None
+
+
 def _client() -> GitHubClient:
     return GitHubClient(
         Settings(

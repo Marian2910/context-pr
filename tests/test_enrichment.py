@@ -13,6 +13,7 @@ from contextpr.enrichment import (
     IssueEnricher,
     IssueContextEvidence,
     LLMVerbalizerSettings,
+    LocalPullRequestHistoryRetriever,
     LightweightLLMGuidanceVerbalizer,
 )
 from contextpr.models import IssueLocation, SonarIssue
@@ -20,6 +21,7 @@ from contextpr.persistence import (
     GitCommitRecord,
     GitFileTouchRecord,
     HistoryStore,
+    PullRequestFileRecord,
     PullRequestRecord,
     PullRequestReviewCommentRecord,
     SonarIssueRecord,
@@ -863,6 +865,148 @@ def test_issue_enricher_can_fall_back_to_review_comment_history(
         "Similar local cases in this file more often needed behavior-aware follow-up than quick "
         "cleanup, so inspect the surrounding logic before simplifying it."
     )
+
+
+def test_local_pull_request_history_retriever_finds_strong_same_file_signal(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for pr_number in range(1, 4):
+        store.upsert_pull_request(
+            "octo/example",
+            PullRequestRecord(
+                pr_number=pr_number,
+                title=f"Refactor handler {pr_number}",
+                body="cleanup pass",
+                updated_at=f"2026-05-1{pr_number}T10:00:00Z",
+            ),
+            files=(
+                PullRequestFileRecord(pr_number=pr_number, file_path="src/app.py"),
+            ),
+        )
+    for index in range(1, 4):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"issue-{index}",
+                rule="python:S3923",
+                issue_type="CODE_SMELL",
+                severity="MAJOR",
+                component="src/app.py",
+                message="Remove this if statement or edit its code blocks so that they're not all the same.",
+                status="OPEN",
+                updated_at=f"2026-05-1{index}T12:00:00+00:00",
+            ),
+        )
+
+    context = LocalPullRequestHistoryRetriever(store, "octo/example").find_context(
+        SonarIssue(
+            key="pr-history",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert context is not None
+    assert context.same_exact_path_matches == 3
+    assert context.dominant_maintenance == "cleanup"
+
+
+def test_issue_enricher_surfaces_local_sonar_history_for_recurrent_trivial_smell(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 6):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"recurrent-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2026-05-1{index}T10:00:00+00:00",
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=tmp_path / "missing.csv",
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is not None
+    assert enrichment.guidance.level is GuidanceLevel.MINIMAL
+    assert enrichment.guidance.evidence_note is not None
+    assert "worth resolving in this PR" in enrichment.guidance.evidence_note
+
+
+def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                (
+                    "message,rule,type,tags,clean_code_attribute,"
+                    "clean_code_attribute_category,impacts,component,"
+                    "ccs_classification,status,creation_date"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-01"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-02"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-03"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-04"
+                ),
+                (
+                    "\"Review branch behavior\",python:S3923,CODE_SMELL,\"['design']\","
+                    "CLEAR,INTENTIONAL,\"[{'severity': 'HIGH'}]\",repo:src/app.py,"
+                    "refactor,open,2024-02-05"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(
+        SonarIssue(
+            key="issue-persistent-global",
+            rule="python:S3923",
+            severity="MAJOR",
+            message="Remove this if statement or edit its code blocks so that they're not all the same.",
+            location=IssueLocation(path="src/app.py", line=14),
+            issue_type="CODE_SMELL",
+            tags=("design",),
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.evidence_note is not None
+    assert "worth deciding explicitly" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_rule_id_before_message_text(tmp_path: Path) -> None:
