@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import json
-import re
+import math
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 from contextpr.data.dataset import load_dataset
+from contextpr.enrichment.history_constants import (
+    DISPOSITION_LABELS,
+    MAINTENANCE_LABELS,
+    MIN_RETRIEVAL_SCORE,
+    STOP_TOKENS,
+    STRONG_MATCH_SCORE,
+    TEST_PATH_TOKENS,
+    TOKEN_PATTERN,
+)
 from contextpr.models import SonarIssue
 from contextpr.persistence import (
     GitCommitRecord,
@@ -19,23 +29,6 @@ from contextpr.persistence import (
     PullRequestReviewCommentRecord,
     SonarIssueRecord,
 )
-
-TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
-TEST_PATH_TOKENS = {"test", "tests", "spec", "specs"}
-MIN_RETRIEVAL_SCORE = 4.0
-STRONG_MATCH_SCORE = 10.0
-
-DISPOSITION_LABELS = {
-    "resolved": "resolved in code",
-    "accepted": "kept as accepted debt",
-    "persistent": "left open or deferred",
-}
-
-MAINTENANCE_LABELS = {
-    "cleanup": "small refactors",
-    "behavior": "behavior-sensitive changes",
-    "supporting": "nearby follow-up changes",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +48,12 @@ class IssueContextEvidence:
     dominant_disposition: str | None = None
     dominant_disposition_share: float = 0.0
     disposition_distribution: tuple[tuple[str, int], ...] = ()
+    salient_terms: tuple[str, ...] = ()
+    resolved_share: float = 0.0
+    accepted_share: float = 0.0
+    persistent_share: float = 0.0
+    quick_fix_share: float = 0.0
+    median_resolution_days: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +150,13 @@ class GlobalDatasetHistoryRetriever:
 
         sample_size = len(similar)
         same_rule_matches = int((similar["rule"] == issue.rule).sum())
+        salient_terms = self._salient_terms(
+            issue,
+            [f"{str(row.get('message', ''))} {str(row.get('component', ''))}" for _, row in similar.iterrows()],
+        )
+        resolved_share = self._distribution_share(disposition_distribution, "resolved")
+        accepted_share = self._distribution_share(disposition_distribution, "accepted")
+        persistent_share = self._distribution_share(disposition_distribution, "persistent")
 
         return IssueContextEvidence(
             sample_size=sample_size,
@@ -168,6 +174,10 @@ class GlobalDatasetHistoryRetriever:
             dominant_disposition=dominant_disposition,
             dominant_disposition_share=dominant_disposition_share,
             disposition_distribution=disposition_distribution,
+            salient_terms=salient_terms,
+            resolved_share=resolved_share,
+            accepted_share=accepted_share,
+            persistent_share=persistent_share,
         )
 
     def _load_dataset(self) -> pd.DataFrame:
@@ -220,6 +230,19 @@ class GlobalDatasetHistoryRetriever:
         if sample_size <= 0:
             return 0.0
         return round(count / sample_size, 4)
+
+    @staticmethod
+    def _distribution_share(
+        distribution: tuple[tuple[str, int], ...],
+        label: str,
+    ) -> float:
+        total = sum(count for _, count in distribution)
+        if total <= 0:
+            return 0.0
+        for current_label, count in distribution:
+            if current_label == label:
+                return round(count / total, 4)
+        return 0.0
 
     @staticmethod
     def _score_row(issue: SonarIssue, row: pd.Series) -> float:
@@ -346,6 +369,52 @@ class GlobalDatasetHistoryRetriever:
     def _message_overlap(left: str, right: str) -> float:
         return GlobalDatasetHistoryRetriever._token_overlap(left, right)
 
+    @staticmethod
+    def _content_tokens(value: str) -> tuple[str, ...]:
+        return tuple(
+            token
+            for token in GlobalDatasetHistoryRetriever._tokens(value)
+            if len(token) > 2 and token not in STOP_TOKENS and not token.isdigit()
+        )
+
+    @staticmethod
+    def _salient_terms(
+        issue: SonarIssue,
+        documents: list[str],
+        *,
+        top_k: int = 3,
+    ) -> tuple[str, ...]:
+        issue_terms = set(
+            GlobalDatasetHistoryRetriever._content_tokens(issue.message)
+            + GlobalDatasetHistoryRetriever._content_tokens(issue.location.path)
+            + tuple(issue.tags)
+        )
+        if not issue_terms or not documents:
+            return ()
+
+        document_terms = [
+            set(GlobalDatasetHistoryRetriever._content_tokens(document))
+            for document in documents
+        ]
+        if not any(document_terms):
+            return ()
+
+        scores: list[tuple[str, float]] = []
+        document_count = len(document_terms)
+        for term in sorted(issue_terms):
+            document_frequency = sum(1 for terms in document_terms if term in terms)
+            if document_frequency == 0:
+                continue
+            term_frequency = sum(
+                GlobalDatasetHistoryRetriever._content_tokens(document).count(term)
+                for document in documents
+            )
+            idf = math.log((1 + document_count) / (1 + document_frequency)) + 1.0
+            scores.append((term, term_frequency * idf))
+
+        scores.sort(key=lambda item: (item[1], item[0]), reverse=True)
+        return tuple(term for term, _score in scores[:top_k])
+
 
 IssueHistoryRetriever = GlobalDatasetHistoryRetriever
 
@@ -420,6 +489,20 @@ class LocalSonarHistoryRetriever:
             disposition_distribution,
             sample_size=sum(count for _, count in disposition_distribution),
         )
+        salient_terms = GlobalDatasetHistoryRetriever._salient_terms(
+            issue,
+            [f"{record.message} {record.component}" for record in similar],
+        )
+        resolution_days = [
+            days
+            for record in similar
+            if (days := self._resolution_days(record)) is not None
+        ]
+        quick_fix_share = (
+            round(sum(1 for days in resolution_days if days <= 7.0) / len(resolution_days), 4)
+            if resolution_days
+            else 0.0
+        )
 
         return IssueContextEvidence(
             sample_size=sample_size,
@@ -443,6 +526,21 @@ class LocalSonarHistoryRetriever:
             dominant_disposition=dominant_disposition,
             dominant_disposition_share=dominant_disposition_share,
             disposition_distribution=disposition_distribution,
+            salient_terms=salient_terms,
+            resolved_share=GlobalDatasetHistoryRetriever._distribution_share(
+                disposition_distribution,
+                "resolved",
+            ),
+            accepted_share=GlobalDatasetHistoryRetriever._distribution_share(
+                disposition_distribution,
+                "accepted",
+            ),
+            persistent_share=GlobalDatasetHistoryRetriever._distribution_share(
+                disposition_distribution,
+                "persistent",
+            ),
+            quick_fix_share=quick_fix_share,
+            median_resolution_days=self._median_resolution_days(resolution_days),
         )
 
     @staticmethod
@@ -524,6 +622,26 @@ class LocalSonarHistoryRetriever:
         if status in {"open", "confirmed", "reopened"}:
             return "persistent"
         return None
+
+    @staticmethod
+    def _resolution_days(record: SonarIssueRecord) -> float | None:
+        if LocalSonarHistoryRetriever._disposition_bucket(record) != "resolved":
+            return None
+        created_at = _parse_timestamp(record.created_at)
+        updated_at = _parse_timestamp(record.updated_at)
+        if created_at is None or updated_at is None or updated_at < created_at:
+            return None
+        return round((updated_at - created_at).total_seconds() / 86400, 2)
+
+    @staticmethod
+    def _median_resolution_days(values: list[float]) -> float | None:
+        if not values:
+            return None
+        sorted_values = sorted(values)
+        middle = len(sorted_values) // 2
+        if len(sorted_values) % 2 == 1:
+            return sorted_values[middle]
+        return round((sorted_values[middle - 1] + sorted_values[middle]) / 2, 2)
 
 
 class LocalGitHistoryRetriever:
@@ -612,6 +730,14 @@ class LocalGitHistoryRetriever:
             if record.rule == issue.rule and self._rule_history_is_relevant(issue, record.component)
         ]
         same_rule_matches = min(len(same_rule_history), len(relevant))
+        salient_terms = GlobalDatasetHistoryRetriever._salient_terms(
+            issue,
+            [
+                f"{commit.message} "
+                + " ".join(touch.file_path for touch in touches)
+                for commit, touches, _score in relevant
+            ],
+        )
 
         return IssueContextEvidence(
             sample_size=len(relevant),
@@ -632,6 +758,7 @@ class LocalGitHistoryRetriever:
                 same_exact_path_matches,
                 len(relevant),
             ),
+            salient_terms=salient_terms,
         )
 
     @staticmethod
@@ -777,6 +904,14 @@ class LocalPullRequestHistoryRetriever:
             max(len(same_rule_history), same_exact_path_matches),
             len(relevant),
         )
+        salient_terms = GlobalDatasetHistoryRetriever._salient_terms(
+            issue,
+            [
+                f"{pull_request.title} {pull_request.body or ''} "
+                + " ".join(file_record.file_path for file_record in files)
+                for pull_request, files, _score in relevant
+            ],
+        )
 
         return IssueContextEvidence(
             sample_size=len(relevant),
@@ -797,6 +932,7 @@ class LocalPullRequestHistoryRetriever:
                 same_exact_path_matches,
                 len(relevant),
             ),
+            salient_terms=salient_terms,
         )
 
     @staticmethod
@@ -909,6 +1045,13 @@ class LocalReviewCommentHistoryRetriever:
             max(len(same_rule_history), same_exact_path_matches),
             len(relevant),
         )
+        salient_terms = GlobalDatasetHistoryRetriever._salient_terms(
+            issue,
+            [
+                f"{comment.body} {comment.file_path or ''}"
+                for comment in relevant
+            ],
+        )
 
         return IssueContextEvidence(
             sample_size=len(relevant),
@@ -929,6 +1072,7 @@ class LocalReviewCommentHistoryRetriever:
                 same_exact_path_matches,
                 len(relevant),
             ),
+            salient_terms=salient_terms,
         )
 
     @staticmethod
@@ -960,3 +1104,25 @@ class LocalReviewCommentHistoryRetriever:
         if any(token in normalized for token in ("test", "docs", "comment", "naming")):
             return "supporting"
         return "cleanup"
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    normalized = value.strip()
+    for candidate in (
+        normalized,
+        normalized.replace("Z", "+00:00"),
+    ):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            pass
+
+    for pattern in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S%z"):
+        try:
+            return datetime.strptime(normalized, pattern)
+        except ValueError:
+            continue
+    return None

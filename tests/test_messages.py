@@ -17,10 +17,10 @@ def test_message_service_builds_generic_behavior_sensitive_cleanup_guidance() ->
     next_step = service.build_next_step(issue, "behavior_sensitive_cleanup", None, None)
 
     assert "prefix" not in explanation
-    assert "behavior" in explanation.lower() or "state" in explanation.lower()
+    assert "preserving" in explanation.lower() or "behavior" in explanation.lower()
     assert next_step is not None
     assert "prefix" not in next_step
-    assert "behavior" in next_step.lower() or "state" in next_step.lower()
+    assert "expected" in next_step.lower() or "outcome" in next_step.lower()
 
 
 def test_message_service_builds_bug_guidance_without_history() -> None:
@@ -85,7 +85,7 @@ def test_message_service_uses_history_for_non_smell_non_bug_next_step() -> None:
     next_step = service.build_next_step(issue, "general_review", context, "local_sonar")
 
     assert next_step is not None
-    assert "cleanup" in next_step.lower() or "open" in next_step.lower()
+    assert "area" in next_step.lower() or "current change" in next_step.lower()
 
 
 def test_message_service_builds_local_persistent_debt_evidence() -> None:
@@ -108,8 +108,8 @@ def test_message_service_builds_local_persistent_debt_evidence() -> None:
     note = service.build_evidence_note(context, "local_sonar")
 
     assert note is not None
-    assert "Similar local cases" in note
-    assert "leave it for follow-up" in note or "fix it now" in note
+    assert "similar cases of this rule often stayed open or were deferred" in note
+    assert "follow-up decision" in note
 
 
 def test_message_service_builds_global_split_distribution_evidence() -> None:
@@ -129,8 +129,8 @@ def test_message_service_builds_global_split_distribution_evidence() -> None:
     note = service.build_evidence_note(context, "global_dataset")
 
     assert note is not None
-    assert "Historically similar matches" in note
-    assert "split between" in note
+    assert "historical matches" in note.lower()
+    assert "behavior-preserving edits" in note or "split between" in note
 
 
 def test_message_service_returns_none_without_context() -> None:

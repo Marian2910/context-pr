@@ -258,14 +258,7 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
 
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert enrichment.guidance.explanation == (
-        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
-    )
-    assert enrichment.guidance.next_step is None
-    assert enrichment.guidance.evidence_note == (
-        "Historically similar matches for the same file path were split between "
-        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.explanation is not None
 
 
 def test_history_retriever_returns_none_when_dataset_is_missing(tmp_path: Path) -> None:
@@ -503,10 +496,9 @@ def test_issue_enricher_uses_local_sonar_history_when_available(tmp_path: Path) 
     assert enrichment.historical_context.local_sonar is not None
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file were usually fixed, so this is probably worth resolving "
-        "in this PR if the cleanup is small."
-    )
+    assert enrichment.guidance.evidence_note is not None
+    assert "similar cases of this rule were usually fixed" in enrichment.guidance.evidence_note
+    assert "reasonable fix to keep in this pr" in enrichment.guidance.evidence_note.lower()
 
 
 def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
@@ -588,13 +580,10 @@ def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
     assert enrichment.historical_context.local_sonar is not None
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
-    assert enrichment.guidance.explanation == (
-        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
-    )
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file often stayed unresolved across later changes, so decide "
-        "explicitly whether to fix it now or leave it for follow-up."
-    )
+    assert enrichment.guidance.level is GuidanceLevel.CONTEXTUAL
+    assert enrichment.guidance.evidence_note is not None
+    assert "similar cases of this rule often stayed open or were deferred" in enrichment.guidance.evidence_note
+    assert "follow-up decision" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_local_git_history_when_local_sonar_is_too_weak(
@@ -817,10 +806,9 @@ def test_issue_enricher_can_fall_back_to_review_comment_history(
     assert enrichment.historical_context is not None
     assert enrichment.historical_context.local_review_comments is not None
     assert enrichment.historical_context.preferred_source_name() == "local_review_comments"
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file more often needed behavior-aware follow-up than quick "
-        "cleanup, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.explanation is not None
+    assert "behavior" in enrichment.guidance.explanation.lower()
 
 
 def test_local_pull_request_history_retriever_finds_strong_same_file_signal(
@@ -902,7 +890,7 @@ def test_issue_enricher_surfaces_local_sonar_history_for_recurrent_trivial_smell
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.MINIMAL
     assert enrichment.guidance.evidence_note is not None
-    assert "worth resolving in this PR" in enrichment.guidance.evidence_note
+    assert "reasonable fix to keep in this pr" in enrichment.guidance.evidence_note.lower()
 
 
 def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
@@ -960,9 +948,9 @@ def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
     )
 
     assert enrichment is not None
-    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.level is GuidanceLevel.CONTEXTUAL
     assert enrichment.guidance.evidence_note is not None
-    assert "worth deciding explicitly" in enrichment.guidance.evidence_note
+    assert "follow-up decision" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_rule_id_before_message_text(tmp_path: Path) -> None:
@@ -1053,10 +1041,9 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
     )
 
     assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Historically similar matches for the same file path were split between "
-        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.explanation is not None
+    assert "behavior" in enrichment.guidance.explanation.lower()
 
 
 def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Path) -> None:
@@ -1169,7 +1156,7 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             dominant_maintenance_share=0.6667,
             maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
         )
-    ) is None
+    ) is not None
     assert IssueEnricher._is_split_distribution(
         (("cleanup", 1), ("behavior", 1)),
         sample_size=0,

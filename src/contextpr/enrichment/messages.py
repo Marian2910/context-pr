@@ -1,46 +1,32 @@
 from __future__ import annotations
 
-from contextpr.enrichment.history import (
-    DISPOSITION_LABELS,
-    MAINTENANCE_LABELS,
-    HistoricalContext,
-)
+from contextpr.enrichment.history import HistoricalContext
 from contextpr.models import SonarIssue
 
 VariantOptions = tuple[str, str, str, str]
 
-HOTSPOT_FILE_MATCHES = 2
-HOTSPOT_MODULE_MATCHES = 3
-HOTSPOT_MODULE_SHARE = 0.5
-MIN_HISTORY_SHARE = 0.5
+LOCAL_HISTORY_SOURCES = {
+    "local_sonar",
+    "local_git",
+    "local_prs",
+    "local_review_comments",
+}
 
 EXPLANATION_OPTIONS: dict[str, VariantOptions] = {
-    "behavior_sensitive_change": (
-        "This may affect runtime behavior, so verify the intended outcome before editing it.",
-        "Review this path carefully before changing it because the current behavior may be intentional.",
-        "Validate the expected behavior here before rewriting the code around it.",
-        "Check what behavior this code is preserving before you refactor it.",
-    ),
-    "behavior_sensitive_cleanup": (
-        "This warning points to behavior-sensitive cleanup, so preserve the current result when you simplify it.",
-        "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it.",
-        "Treat this as a behavior-sensitive cleanup and make sure the simplification keeps the current outcome intact.",
-        "Simplify this carefully because the current structure may be preserving runtime behavior.",
+    "inspect_before_changing": (
+        "This is worth checking before simplifying, because the current structure may be preserving behavior or state.",
+        "Before simplifying this, check whether the current structure is preserving an intended behavior.",
+        "This looks like a cleanup candidate, but the surrounding behavior should be confirmed first.",
+        "Before rewriting this part, verify what behavior or state the current code is preserving.",
     ),
 }
 
 NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
-    "behavior_sensitive_change": (
-        "Verify the surrounding logic before changing the flagged code path.",
-        "Check the surrounding logic to confirm the current behavior is really intended.",
-        "Validate the code path against the expected behavior before changing it.",
-        "Review the flagged logic path against the expected behavior before editing it.",
-    ),
-    "behavior_sensitive_cleanup": (
-        "Make the cleanup in a way that binds or preserves the current runtime state before simplifying the structure.",
-        "Apply the simplification only after you make the affected state explicit enough to preserve the current behavior.",
-        "Restructure this cleanup so the current runtime state is preserved instead of relying on incidental control flow.",
-        "Simplify it only after you make the behavior-carrying state explicit and verify the affected path.",
+    "inspect_before_changing": (
+        "Validate the affected path against the expected outcome before editing it.",
+        "Check the affected path against the expected behavior before making the simplification.",
+        "Review the surrounding path and make sure the current outcome is still covered before changing it.",
+        "Verify the current outcome on this path before you rewrite the flagged code.",
     ),
 }
 
@@ -50,103 +36,80 @@ class DeterministicGuidanceMessageService:
         self,
         issue: SonarIssue,
         issue_pattern: str,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
+        context_signals: object | None = None,
+        historical_context: HistoricalContext | None = None,
+        history_source: str | None = None,
     ) -> str:
-        if issue_pattern == "behavior_sensitive_cleanup":
+        _ = context_signals, historical_context, history_source
+        if issue_pattern in {
+            "inspect_before_changing",
+            "behavior_sensitive_cleanup",
+            "behavior_risk",
+        }:
             return self._pick_required_option(
                 issue,
                 "explanation",
-                EXPLANATION_OPTIONS["behavior_sensitive_cleanup"],
+                EXPLANATION_OPTIONS["inspect_before_changing"],
             )
-
-        if issue.issue_type == "BUG":
-            return self._pick_required_option(
-                issue,
-                "explanation",
-                EXPLANATION_OPTIONS["behavior_sensitive_change"],
-            )
-
-        direct_explanation = self._issue_specific_maintainability_explanation(
-            issue,
-            issue_pattern,
-        )
-        if direct_explanation is not None:
-            return direct_explanation
-
-        assert historical_context is not None
-        return self._build_maintainability_explanation(historical_context, history_source)
+        return self._normalize_issue_message(issue.message)
 
     def build_next_step(
         self,
         issue: SonarIssue,
         issue_pattern: str,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
+        context_signals: object | None = None,
+        historical_context: HistoricalContext | None = None,
+        history_source: str | None = None,
     ) -> str | None:
-        if issue_pattern == "behavior_sensitive_cleanup":
+        if issue_pattern in {
+            "inspect_before_changing",
+            "behavior_sensitive_cleanup",
+            "behavior_risk",
+        }:
             return self._pick_required_option(
                 issue,
                 "next_step",
-                NEXT_STEP_OPTIONS["behavior_sensitive_cleanup"],
+                NEXT_STEP_OPTIONS["inspect_before_changing"],
             )
-
-        if issue.issue_type == "BUG":
-            return self._pick_required_option(
-                issue,
-                "next_step",
-                NEXT_STEP_OPTIONS["behavior_sensitive_change"],
+        if issue_pattern == "general_review" and historical_context is not None:
+            _ = context_signals, history_source
+            return (
+                "If the fix is local to this change, address it in this PR; "
+                "otherwise make the follow-up decision explicit."
             )
-
-        if issue.issue_type == "CODE_SMELL":
-            return None
-
-        assert historical_context is not None
-        return self._build_maintainability_next_step(historical_context, history_source)
+        return None
 
     def build_evidence_note(
         self,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
+        issue: SonarIssue | HistoricalContext | None,
+        issue_pattern: str | None = None,
+        context_signals: object | None = None,
+        historical_context: HistoricalContext | None = None,
+        history_source: str | None = None,
     ) -> str | None:
+        if isinstance(issue, HistoricalContext) or issue is None:
+            historical_context = issue
+            issue = None
+            history_source = issue_pattern
+            issue_pattern = None
+
         if historical_context is None:
             return None
-        return self._build_maintainability_evidence_note(historical_context, history_source)
+
+        if issue is None or issue_pattern is None:
+            return self._compatibility_evidence_note(historical_context, history_source)
+
+        if issue_pattern == "worth_fixing_now":
+            return self._fix_now_note(issue, context_signals, historical_context, history_source)
+        if issue_pattern == "decide_before_deferring":
+            return self._defer_decision_note(historical_context, history_source)
+        if issue_pattern == "recurs_here":
+            return self._recurrence_note(historical_context, history_source)
+        return None
 
     @staticmethod
     def is_local_history_source(history_source: str | None) -> bool:
-        return history_source in {
-            "local_sonar",
-            "local_git",
-            "local_prs",
-            "local_review_comments",
-        }
-
-    def maintainability_focus(self, historical_context: HistoricalContext) -> str:
-        if (
-            historical_context.dominant_maintenance == "behavior"
-            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
-        ):
-            return "behavior_sensitive"
-        if (
-            historical_context.dominant_disposition in {"persistent", "accepted"}
-            and historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
-        ):
-            return "persistent_debt"
-        if (
-            historical_context.dominant_maintenance == "cleanup"
-            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
-        ):
-            return "later_refactor"
-        if (
-            historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES
-            or (
-                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
-                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-            )
-        ):
-            return "accumulating_hotspot"
-        return "recurring_maintenance"
+        return history_source in LOCAL_HISTORY_SOURCES
 
     @staticmethod
     def is_split_distribution(
@@ -163,21 +126,117 @@ class DeterministicGuidanceMessageService:
         second_share = second_count / sample_size
         return second_share >= 0.3 and top_share - second_share <= 0.2
 
-    def _issue_specific_maintainability_explanation(
+    def maintainability_focus(self, historical_context: HistoricalContext) -> str:
+        if historical_context.dominant_maintenance == "behavior":
+            return "behavior_sensitive"
+        if historical_context.dominant_disposition in {"persistent", "accepted"}:
+            return "persistent_debt"
+        if historical_context.dominant_maintenance == "cleanup":
+            return "later_refactor"
+        if historical_context.same_exact_path_matches >= 2:
+            return "accumulating_hotspot"
+        if historical_context.same_path_family_matches >= 3:
+            return "accumulating_hotspot"
+        return "recurring_maintenance"
+
+    def _compatibility_evidence_note(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str | None:
+        focus = self.maintainability_focus(historical_context)
+        if focus == "persistent_debt":
+            return self._defer_decision_note(historical_context, history_source)
+        if focus == "later_refactor":
+            return (
+                f"{self._history_subject(historical_context, history_source)}, "
+                "similar cases of this rule were often fixed as small cleanup work. "
+                "Since this issue is new in the PR, it is worth fixing here if the change stays local."
+            )
+        if focus == "accumulating_hotspot":
+            return self._recurrence_note(historical_context, history_source)
+        if focus == "behavior_sensitive":
+            return (
+                f"{self._history_subject(historical_context, history_source)}, "
+                "similar cases for this rule were split between cleanup and behavior-preserving edits. "
+                "Check the intended behavior before simplifying this code."
+            )
+        return None
+
+    def _fix_now_note(
         self,
         issue: SonarIssue,
-        issue_pattern: str,
-    ) -> str | None:
-        if issue_pattern == "structural_simplification":
-            return (
-                "This structure can be simplified, but first confirm that the current separation "
-                "is not carrying distinct behavior or intent."
-            )
+        context_signals: object,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str:
+        subject = self._history_subject(historical_context, history_source)
+        if historical_context.quick_fix_share >= 0.5:
+            tendency = "similar cases of this rule were often fixed quickly"
+        elif historical_context.resolved_share >= 0.6:
+            tendency = "similar cases of this rule were often fixed rather than left open"
+        else:
+            tendency = "this rule has been handled repeatedly in nearby code"
 
-        if issue.issue_type != "CODE_SMELL":
-            return None
+        effort_clause = ""
+        if getattr(context_signals, "small_effort", False) and issue.effort:
+            effort_clause = f" Sonar estimates about {issue.effort} to address it."
 
-        return self._normalize_issue_message(issue.message)
+        return (
+            f"{subject}, {tendency}.{effort_clause} "
+            "Since this issue is new in the PR, it is worth fixing here if the change stays local."
+        ).replace("..", ".")
+
+    def _defer_decision_note(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str:
+        subject = self._history_subject(historical_context, history_source)
+        return (
+            f"{subject}, similar cases of this rule often remained open once introduced. "
+            "Since this issue is new in the PR, fix it now if possible; otherwise leave an explicit follow-up decision."
+        )
+
+    def _recurrence_note(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str:
+        subject = self._history_subject(historical_context, history_source)
+        area = self._location_label(historical_context, history_source)
+        return (
+            f"{subject}, this rule has appeared repeatedly in {area}. "
+            "Since this PR touches the surrounding code, avoid adding another instance of the same maintainability pattern."
+        )
+
+    def _history_subject(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str:
+        if self.is_local_history_source(history_source):
+            return "In this repository"
+        if historical_context.same_exact_path_matches >= 2:
+            return "Among similar historical matches for this file path"
+        return "Among similar historical matches for this rule"
+
+    def _location_label(
+        self,
+        historical_context: HistoricalContext,
+        history_source: str | None,
+    ) -> str:
+        if self.is_local_history_source(history_source):
+            if historical_context.same_exact_path_matches >= 2:
+                return "this file"
+            if historical_context.same_path_family_matches >= 3:
+                return "this module area"
+            return "this code area"
+        if historical_context.same_exact_path_matches >= 2:
+            return "matching file paths"
+        if historical_context.same_path_family_matches >= 3:
+            return "similar module paths"
+        return "similar code areas"
 
     @staticmethod
     def _normalize_issue_message(message: str) -> str:
@@ -187,188 +246,6 @@ class DeterministicGuidanceMessageService:
         if normalized[-1] not in ".!?":
             normalized = f"{normalized}."
         return normalized
-
-    def _build_maintainability_explanation(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str:
-        location_subject = self._location_subject(historical_context, history_source)
-        focus = self.maintainability_focus(historical_context)
-        if focus == "behavior_sensitive":
-            return (
-                f"Similar cleanup in {location_subject} often touched behavior-sensitive paths, "
-                "so check whether this structure is carrying intent before simplifying it."
-            )
-        if focus == "persistent_debt":
-            return (
-                f"Similar smells in {location_subject} often stayed around across later changes, "
-                "so this is worth deciding on while the code is already open."
-            )
-        if focus == "later_refactor":
-            return (
-                f"Similar smells in {location_subject} were often handled later during cleanup work "
-                "instead of immediately."
-            )
-        if focus == "accumulating_hotspot":
-            return (
-                f"Similar smells have shown up more than once in {location_subject}, "
-                "so this is probably not a one-off cleanup."
-            )
-        return f"Similar cases in {location_subject} have needed follow-up cleanup more than once."
-
-    def _build_maintainability_next_step(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str:
-        _ = history_source
-        focus = self.maintainability_focus(historical_context)
-        if focus == "behavior_sensitive":
-            return (
-                "If you simplify it, verify that the current structure is not preserving "
-                "a behavior difference."
-            )
-        if focus == "persistent_debt":
-            return (
-                "If you are already touching this code, either fix it now or leave a clear note "
-                "about why it is staying."
-            )
-        if focus == "later_refactor":
-            return (
-                "If the cleanup is straightforward here, fixing it now may avoid another cleanup pass later."
-            )
-        if focus == "accumulating_hotspot":
-            return "Use this touchpoint to simplify or narrow the smell while the code is already open."
-        return "Consider addressing it in this change or leaving an explicit note if it is staying for now."
-
-    def _build_maintainability_evidence_note(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str | None:
-        evidence_subject = self._evidence_subject(historical_context, history_source)
-        evidence_pattern = self._evidence_pattern_clause(historical_context)
-        decision_support = self._decision_support_clause(historical_context, history_source)
-        if evidence_subject and evidence_pattern and decision_support:
-            return f"{evidence_subject} {evidence_pattern}, so {decision_support}."
-        if evidence_subject and evidence_pattern:
-            return f"{evidence_subject} {evidence_pattern}."
-        if decision_support:
-            return decision_support[:1].upper() + decision_support[1:] + "."
-        return None
-
-    def _evidence_subject(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str | None:
-        if self.is_local_history_source(history_source):
-            if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-                return "Similar local cases in this file"
-            if (
-                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
-                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-            ):
-                return "Similar local cases in this module area"
-            return None
-        if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-            return "Historically similar matches for the same file path"
-        if (
-            historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
-            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-        ):
-            return "Historically similar matches for similar module paths"
-        return None
-
-    def _evidence_pattern_clause(self, historical_context: HistoricalContext) -> str | None:
-        disposition_distribution = historical_context.disposition_distribution
-        if disposition_distribution:
-            if self.is_split_distribution(
-                disposition_distribution,
-                sample_size=sum(count for _, count in disposition_distribution),
-            ):
-                first, second = disposition_distribution[:2]
-                return (
-                    f"were split between {DISPOSITION_LABELS[first[0]]} "
-                    f"and {DISPOSITION_LABELS[second[0]]}"
-                )
-            if (
-                historical_context.dominant_disposition is not None
-                and historical_context.dominant_disposition_share >= MIN_HISTORY_SHARE
-            ):
-                if historical_context.dominant_disposition == "persistent":
-                    return "often stayed unresolved across later changes"
-                if historical_context.dominant_disposition == "accepted":
-                    return "were often kept as accepted debt"
-                return "were usually fixed"
-
-        maintenance_distribution = historical_context.maintenance_distribution
-        if not maintenance_distribution:
-            return None
-
-        if self.is_split_distribution(
-            maintenance_distribution,
-            sample_size=historical_context.sample_size,
-        ):
-            first, second = maintenance_distribution[:2]
-            return (
-                f"were split between {MAINTENANCE_LABELS[first[0]]} "
-                f"and {MAINTENANCE_LABELS[second[0]]}"
-            )
-
-        if (
-            historical_context.dominant_maintenance == "cleanup"
-            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
-        ):
-            return "were usually fixed as small clean-ups"
-        if (
-            historical_context.dominant_maintenance == "behavior"
-            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
-        ):
-            return "more often needed behavior-aware follow-up than quick cleanup"
-        return None
-
-    def _decision_support_clause(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str | None:
-        focus = self.maintainability_focus(historical_context)
-        if focus == "behavior_sensitive":
-            return "inspect the surrounding logic before simplifying it"
-        if focus == "persistent_debt":
-            if self.is_local_history_source(history_source):
-                return "decide explicitly whether to fix it now or leave it for follow-up"
-            return "it is worth deciding explicitly whether this should be fixed now"
-        if focus in {"later_refactor", "accumulating_hotspot"}:
-            if self.is_local_history_source(history_source):
-                return "this is probably worth resolving in this PR if the cleanup is small"
-            return None
-        return None
-
-    def _location_subject(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str:
-        if self.is_local_history_source(history_source):
-            if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-                return "this file"
-            if (
-                historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
-                and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-            ):
-                return "this module area"
-            return "this repository"
-        if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
-            return "matching file paths"
-        if (
-            historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
-            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-        ):
-            return "similar module paths"
-        return "similar code areas"
 
     @staticmethod
     def _pick_required_option(

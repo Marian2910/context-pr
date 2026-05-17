@@ -279,6 +279,8 @@ class SonarQubeClient:
                 payload,
                 "cleanCodeAttributeCategory",
             ),
+            effort=SonarQubeClient._optional_string(payload, "effort")
+            or SonarQubeClient._optional_string(payload, "debt"),
         )
 
     @staticmethod

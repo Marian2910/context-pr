@@ -14,31 +14,21 @@ from contextpr.enrichment.history import (
     LocalSonarHistoryRetriever,
 )
 from contextpr.enrichment.messages import DeterministicGuidanceMessageService
+from contextpr.enrichment.nlp_constants import (
+    AMBIGUITY_MARKERS,
+    BEHAVIOR_RULES,
+    HOTSPOT_FILE_MATCHES,
+    HOTSPOT_MODULE_MATCHES,
+    HOTSPOT_MODULE_SHARE,
+    MIN_HISTORY_SAMPLE_SIZE,
+    MIN_HISTORY_SHARE,
+    MIN_STRONG_HISTORY_MATCHES,
+    SELF_EXPLANATORY_RULES,
+    STOP_TOKENS,
+    TOKEN_PATTERN,
+)
 from contextpr.models import SonarIssue
 from contextpr.persistence import HistoryStore
-
-MIN_HISTORY_SAMPLE_SIZE = 5
-MIN_HISTORY_SHARE = 0.5
-MIN_STRONG_HISTORY_MATCHES = 2
-HOTSPOT_FILE_MATCHES = 2
-HOTSPOT_MODULE_MATCHES = 3
-HOTSPOT_MODULE_SHARE = 0.5
-
-PATTERN_BY_RULE = {
-    "python:S3923": "structural_simplification",
-    "python:S1172": "self_explanatory_cleanup",
-    "python:S1481": "self_explanatory_cleanup",
-    "python:S1192": "self_explanatory_cleanup",
-    "python:S1186": "self_explanatory_cleanup",
-    "python:S1515": "behavior_sensitive_cleanup",
-}
-
-TRIVIAL_PATTERNS = {"self_explanatory_cleanup"}
-
-DETAILED_PATTERNS = {
-    "behavior_risk",
-    "behavior_sensitive_cleanup",
-}
 
 
 class GuidanceLevel(StrEnum):
@@ -46,6 +36,14 @@ class GuidanceLevel(StrEnum):
     MINIMAL = "minimal"
     CONTEXTUAL = "contextual"
     DETAILED = "detailed"
+
+
+class CommentIntent(StrEnum):
+    NONE = "none"
+    WORTH_FIXING_NOW = "worth_fixing_now"
+    INSPECT_BEFORE_CHANGING = "inspect_before_changing"
+    DECIDE_BEFORE_DEFERRING = "decide_before_deferring"
+    RECURS_HERE = "recurs_here"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +58,29 @@ class DeveloperGuidance:
 class IssueEnrichment:
     guidance: DeveloperGuidance
     historical_context: CombinedHistoricalContext | None
+
+
+@dataclass(frozen=True, slots=True)
+class IssueLanguageProfile:
+    content_terms: tuple[str, ...]
+    ambiguity_markers: tuple[str, ...]
+    self_explanatory_score: float
+    history_anchor_terms: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSignals:
+    source_is_local: bool
+    self_explanatory: bool
+    behavior_risk: bool
+    local_recurrence: bool
+    same_file_recurrence: bool
+    same_module_recurrence: bool
+    fix_tendency_high: bool
+    quick_fix_tendency_high: bool
+    persistence_high: bool
+    small_effort: bool
+    strong_history: bool
 
 
 class IssueEnricher:
@@ -110,10 +131,24 @@ class IssueEnricher:
         historical_context = self._historical_context(issue)
         active_history = self._active_history(historical_context)
         active_source = self._active_source(historical_context)
-        guidance = self._build_guidance(issue, active_history, active_source)
-        if guidance is None:
+        language_profile = self._issue_language_profile(issue, active_history)
+        context_signals = self._context_signals(
+            issue,
+            active_history,
+            active_source,
+            language_profile,
+        )
+        comment_intent = self._comment_intent(issue, context_signals)
+        if comment_intent is CommentIntent.NONE:
             return None
 
+        guidance = self._build_guidance(
+            issue,
+            comment_intent,
+            context_signals,
+            active_history,
+            active_source,
+        )
         return IssueEnrichment(guidance=guidance, historical_context=historical_context)
 
     def _historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
@@ -186,232 +221,275 @@ class IssueEnricher:
     def _build_guidance(
         self,
         issue: SonarIssue,
+        comment_intent: CommentIntent,
+        context_signals: ContextSignals,
         historical_context: HistoricalContext | None,
         history_source: str | None,
-    ) -> DeveloperGuidance | None:
-        issue_pattern = self._issue_pattern(issue)
-        guidance_level = self._guidance_level(
-            issue,
-            issue_pattern,
-            historical_context,
-            history_source,
-        )
-        if guidance_level is GuidanceLevel.NONE:
-            return None
-
-        evidence_note = self._build_evidence_note(historical_context, history_source)
-        if guidance_level is GuidanceLevel.MINIMAL:
-            return DeveloperGuidance(level=guidance_level, evidence_note=evidence_note)
-
-        explanation = self._build_explanation(
-            issue,
-            issue_pattern,
-            historical_context,
-            history_source,
-        )
-        next_step = (
-            self._build_next_step(issue, issue_pattern, historical_context, history_source)
-            if guidance_level is GuidanceLevel.DETAILED
-            else None
-        )
+    ) -> DeveloperGuidance:
+        if comment_intent is CommentIntent.INSPECT_BEFORE_CHANGING:
+            return DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
+                explanation=self._message_service.build_explanation(
+                    issue,
+                    comment_intent.value,
+                    context_signals,
+                    historical_context,
+                    history_source,
+                ),
+                next_step=self._message_service.build_next_step(
+                    issue,
+                    comment_intent.value,
+                    context_signals,
+                    historical_context,
+                    history_source,
+                ),
+            )
 
         return DeveloperGuidance(
-            level=guidance_level,
-            explanation=explanation,
-            next_step=next_step,
-            evidence_note=evidence_note,
-        )
-
-    def _issue_pattern(self, issue: SonarIssue) -> str:
-        if issue.rule in PATTERN_BY_RULE:
-            return PATTERN_BY_RULE[issue.rule]
-
-        message = issue.message.lower()
-        if "not all the same" in message:
-            return "structural_simplification"
-        if "unused function parameter" in message:
-            return "self_explanatory_cleanup"
-        if "unused local variable" in message:
-            return "self_explanatory_cleanup"
-        if "duplicating this literal" in message:
-            return "self_explanatory_cleanup"
-        if "function is empty" in message or issue.rule == "python:S1186":
-            return "self_explanatory_cleanup"
-        if "lambda" in message and "loop iteration" in message:
-            return "behavior_sensitive_cleanup"
-        if issue.issue_type == "BUG":
-            return "behavior_risk"
-        if issue.issue_type == "CODE_SMELL":
-            return "cleanup_candidate"
-        return "general_review"
-
-    def _guidance_level(
-        self,
-        issue: SonarIssue,
-        issue_pattern: str,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> GuidanceLevel:
-        if issue_pattern in TRIVIAL_PATTERNS:
-            return (
+            level=(
                 GuidanceLevel.MINIMAL
-                if self._should_surface_self_explanatory_history(
-                    historical_context,
-                    history_source,
-                )
-                else GuidanceLevel.NONE
-            )
-
-        if issue_pattern == "structural_simplification":
-            return (
-                GuidanceLevel.DETAILED
-                if self._needs_duplicate_condition_context(historical_context)
-                else GuidanceLevel.NONE
-            )
-
-        if issue_pattern in DETAILED_PATTERNS or issue.issue_type == "BUG":
-            return GuidanceLevel.DETAILED
-
-        if issue.issue_type == "CODE_SMELL":
-            return (
-                GuidanceLevel.CONTEXTUAL
-                if self._should_comment_on_maintainability(
-                    historical_context,
-                    history_source,
-                )
-                else GuidanceLevel.NONE
-            )
-
-        if self._has_grounded_history(historical_context):
-            return GuidanceLevel.CONTEXTUAL
-
-        return GuidanceLevel.NONE
-
-    def _build_explanation(
-        self,
-        issue: SonarIssue,
-        issue_pattern: str,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> str:
-        return self._message_service.build_explanation(
-            issue,
-            issue_pattern,
-            historical_context,
-            history_source,
+                if context_signals.self_explanatory
+                else GuidanceLevel.CONTEXTUAL
+            ),
+            evidence_note=self._message_service.build_evidence_note(
+                issue,
+                comment_intent.value,
+                context_signals,
+                historical_context,
+                history_source,
+            ),
         )
 
-    def _build_next_step(
+    def _context_signals(
         self,
         issue: SonarIssue,
-        issue_pattern: str,
         historical_context: HistoricalContext | None,
         history_source: str | None,
-    ) -> str | None:
-        return self._message_service.build_next_step(
-            issue,
-            issue_pattern,
-            historical_context,
-            history_source,
+        language_profile: IssueLanguageProfile,
+    ) -> ContextSignals:
+        source_is_local = self._message_service.is_local_history_source(history_source)
+        self_explanatory = self._is_self_explanatory(issue, language_profile)
+        behavior_risk = self._is_behavior_risk(issue, historical_context, language_profile)
+        strong_history = self._has_actionable_history(historical_context)
+        same_file_recurrence = (
+            historical_context is not None
+            and historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES
+        )
+        same_module_recurrence = (
+            historical_context is not None
+            and historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
+            and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
+        )
+        local_recurrence = source_is_local and (same_file_recurrence or same_module_recurrence)
+        fix_tendency_high = self._fix_tendency_high(historical_context)
+        quick_fix_tendency_high = self._quick_fix_tendency_high(historical_context)
+        persistence_high = self._persistence_high(historical_context)
+        small_effort = self._small_effort(issue.effort)
+        return ContextSignals(
+            source_is_local=source_is_local,
+            self_explanatory=self_explanatory,
+            behavior_risk=behavior_risk,
+            local_recurrence=local_recurrence,
+            same_file_recurrence=same_file_recurrence,
+            same_module_recurrence=same_module_recurrence,
+            fix_tendency_high=fix_tendency_high,
+            quick_fix_tendency_high=quick_fix_tendency_high,
+            persistence_high=persistence_high,
+            small_effort=small_effort,
+            strong_history=strong_history,
         )
 
-    def _build_evidence_note(
+    def _comment_intent(
         self,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> str | None:
-        if not self._should_surface_history(historical_context, history_source):
-            return None
-        return self._message_service.build_evidence_note(historical_context, history_source)
+        issue: SonarIssue,
+        context_signals: ContextSignals,
+    ) -> CommentIntent:
+        if context_signals.behavior_risk:
+            return CommentIntent.INSPECT_BEFORE_CHANGING
 
-    def _should_surface_self_explanatory_history(
+        if context_signals.self_explanatory and not context_signals.local_recurrence:
+            return CommentIntent.NONE
+
+        if context_signals.local_recurrence and context_signals.persistence_high:
+            return CommentIntent.DECIDE_BEFORE_DEFERRING
+
+        if context_signals.local_recurrence and (
+            context_signals.fix_tendency_high
+            or context_signals.quick_fix_tendency_high
+            or context_signals.small_effort
+        ):
+            return CommentIntent.WORTH_FIXING_NOW
+
+        if (
+            not context_signals.self_explanatory
+            and context_signals.local_recurrence
+            and context_signals.strong_history
+        ):
+            return CommentIntent.RECURS_HERE
+
+        if (
+            issue.issue_type == "CODE_SMELL"
+            and not context_signals.self_explanatory
+            and context_signals.source_is_local
+            and context_signals.fix_tendency_high
+        ):
+            return CommentIntent.WORTH_FIXING_NOW
+
+        if (
+            not context_signals.source_is_local
+            and context_signals.strong_history
+            and context_signals.persistence_high
+            and not context_signals.self_explanatory
+        ):
+            return CommentIntent.DECIDE_BEFORE_DEFERRING
+
+        if (
+            not context_signals.source_is_local
+            and context_signals.strong_history
+            and not context_signals.self_explanatory
+            and (context_signals.same_file_recurrence or context_signals.same_module_recurrence)
+        ):
+            return CommentIntent.NONE
+
+        return CommentIntent.NONE
+
+    def _issue_language_profile(
         self,
+        issue: SonarIssue,
         historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> bool:
-        if not self._message_service.is_local_history_source(history_source):
-            return False
-        if not self._has_actionable_history(historical_context):
-            return False
-
-        assert historical_context is not None
-        return self._maintainability_focus(historical_context) in {
-            "persistent_debt",
-            "accumulating_hotspot",
-        }
-
-    def _should_comment_on_maintainability(
-        self,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> bool:
-        if not self._has_actionable_history(historical_context):
-            return False
-
-        assert historical_context is not None
-        focus = self._maintainability_focus(historical_context)
-        if self._message_service.is_local_history_source(history_source):
-            return focus in {
-                "behavior_sensitive",
-                "persistent_debt",
-                "later_refactor",
-                "accumulating_hotspot",
-            }
-
-        return focus in {"behavior_sensitive", "persistent_debt"}
-
-    def _should_surface_history(
-        self,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> bool:
-        if not self._has_actionable_history(historical_context):
-            return False
-
-        if self._message_service.is_local_history_source(history_source):
-            return True
-
-        assert historical_context is not None
-        return self._maintainability_focus(historical_context) in {
-            "behavior_sensitive",
-            "persistent_debt",
-        }
+    ) -> IssueLanguageProfile:
+        content_terms = self._content_terms(issue.message, issue.location.path)
+        ambiguity_markers = tuple(
+            term for term in content_terms if term in AMBIGUITY_MARKERS
+        )
+        self_explanatory_score = self._self_explanatory_score(issue, content_terms)
+        history_anchor_terms = historical_context.salient_terms if historical_context is not None else ()
+        return IssueLanguageProfile(
+            content_terms=content_terms,
+            ambiguity_markers=ambiguity_markers,
+            self_explanatory_score=self_explanatory_score,
+            history_anchor_terms=history_anchor_terms,
+        )
 
     @staticmethod
-    def _needs_duplicate_condition_context(
-        historical_context: HistoricalContext | None,
-    ) -> bool:
-        if not IssueEnricher._has_actionable_history(historical_context):
-            return False
+    def _content_terms(*values: str) -> tuple[str, ...]:
+        terms: list[str] = []
+        for value in values:
+            for token in TOKEN_PATTERN.findall(value.lower()):
+                if len(token) <= 2 or token in STOP_TOKENS or token.isdigit():
+                    continue
+                terms.append(token)
+        seen: dict[str, None] = {}
+        for term in terms:
+            seen.setdefault(term, None)
+        return tuple(seen)
 
-        assert historical_context is not None
-        if historical_context.dominant_disposition in {"accepted", "persistent"}:
+    @staticmethod
+    def _self_explanatory_score(issue: SonarIssue, content_terms: tuple[str, ...]) -> float:
+        score = 0.0
+        term_set = set(content_terms)
+        if {"unused", "parameter"} <= term_set:
+            score += 0.5
+        if {"unused", "variable"} <= term_set:
+            score += 0.5
+        if {"literal", "duplicating"} <= term_set or {"literal", "constant"} <= term_set:
+            score += 0.6
+        if {"empty", "function"} <= term_set:
+            score += 0.5
+        if issue.rule in SELF_EXPLANATORY_RULES:
+            score += 0.35
+        if issue.issue_type == "CODE_SMELL":
+            score += 0.15
+        return min(score, 1.0)
+
+    @staticmethod
+    def _small_effort(effort: str | None) -> bool:
+        if effort is None:
+            return False
+        digits = "".join(char for char in effort if char.isdigit())
+        if not digits:
+            return False
+        return int(digits) <= 10
+
+    @staticmethod
+    def _fix_tendency_high(historical_context: HistoricalContext | None) -> bool:
+        if historical_context is None:
+            return False
+        if historical_context.resolved_share >= 0.6:
             return True
-        if historical_context.dominant_maintenance == "behavior":
-            return True
-
-        maintenance_distribution = historical_context.maintenance_distribution
-        if len(maintenance_distribution) < 2:
-            return False
-
-        top_label, second_label = maintenance_distribution[0][0], maintenance_distribution[1][0]
-        if "behavior" not in {top_label, second_label}:
-            return False
-
-        return IssueEnricher._is_split_distribution(
-            maintenance_distribution,
-            sample_size=historical_context.sample_size,
+        return (
+            historical_context.dominant_disposition == "resolved"
+            and historical_context.dominant_disposition_share >= 0.6
         )
+
+    @staticmethod
+    def _quick_fix_tendency_high(historical_context: HistoricalContext | None) -> bool:
+        if historical_context is None:
+            return False
+        if historical_context.quick_fix_share >= 0.5:
+            return True
+        if historical_context.median_resolution_days is None:
+            return False
+        return historical_context.median_resolution_days <= 7
+
+    @staticmethod
+    def _persistence_high(historical_context: HistoricalContext | None) -> bool:
+        if historical_context is None:
+            return False
+        if historical_context.persistent_share >= 0.6 or historical_context.accepted_share >= 0.5:
+            return True
+        return (
+            historical_context.dominant_disposition in {"persistent", "accepted"}
+            and historical_context.dominant_disposition_share >= 0.6
+        )
+
+    @staticmethod
+    def _is_self_explanatory(
+        issue: SonarIssue,
+        language_profile: IssueLanguageProfile,
+    ) -> bool:
+        return language_profile.self_explanatory_score >= 0.75
+
+    @staticmethod
+    def _is_behavior_risk(
+        issue: SonarIssue,
+        historical_context: HistoricalContext | None,
+        language_profile: IssueLanguageProfile,
+    ) -> bool:
+        if issue.issue_type == "BUG" or issue.rule in BEHAVIOR_RULES:
+            return True
+        if language_profile.ambiguity_markers:
+            return True
+        if historical_context is None:
+            return False
+        if historical_context.dominant_maintenance == "behavior":
+            return historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
+        return False
 
     def _maintainability_focus(self, historical_context: HistoricalContext) -> str:
         return self._message_service.maintainability_focus(historical_context)
+
+    def _issue_pattern(
+        self,
+        issue: SonarIssue,
+        language_profile: IssueLanguageProfile | None = None,
+    ) -> str:
+        profile = language_profile or self._issue_language_profile(issue, None)
+        if issue.rule in SELF_EXPLANATORY_RULES or profile.self_explanatory_score >= 0.75:
+            return "self_explanatory_cleanup"
+        if issue.rule in BEHAVIOR_RULES or profile.ambiguity_markers or issue.issue_type == "BUG":
+            return "behavior_risk"
+        return "general_review"
 
     def _build_maintainability_evidence_note(
         self,
         historical_context: HistoricalContext,
         history_source: str | None = None,
     ) -> str | None:
-        return self._message_service.build_evidence_note(historical_context, history_source)
+        return self._message_service.build_evidence_note(
+            historical_context,
+            history_source,
+        )
 
     @staticmethod
     def _is_split_distribution(
@@ -461,8 +539,4 @@ class IssueEnricher:
             and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
             return True
-
-        return IssueEnricher._is_split_distribution(
-            historical_context.maintenance_distribution,
-            sample_size=historical_context.sample_size,
-        )
+        return False
