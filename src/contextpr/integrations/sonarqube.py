@@ -31,6 +31,15 @@ class SonarProjectHistorySyncResult:
     latest_update: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class SonarProjectHistoryPageResult:
+    should_stop: bool
+    issues_seen: int
+    issues_upserted: int
+    observations_recorded: int
+    latest_update: str | None
+
+
 class SonarQubeClient:
 
     def __init__(self, settings: Settings) -> None:
@@ -83,41 +92,17 @@ class SonarQubeClient:
                 if not isinstance(raw_issues, list):
                     break
 
-                should_stop = False
-                for raw_issue in raw_issues:
-                    if not isinstance(raw_issue, Mapping):
-                        continue
-                    issues_seen += 1
-                    updated_at = self._extract_timestamp(raw_issue, "updateDate")
-                    if previous_cursor and updated_at and updated_at <= previous_cursor:
-                        should_stop = True
-                        continue
-
-                    if updated_at and (latest_update is None or updated_at > latest_update):
-                        latest_update = updated_at
-
-                    if (record := self._map_issue_record(raw_issue)) is None:
-                        continue
-
-                    store.upsert_sonar_issue(repository_key, record)
-                    issues_upserted += 1
-
-                    observed_at = updated_at or record.created_at
-                    if observed_at is not None:
-                        store.record_sonar_issue_observation(
-                            repository_key,
-                            SonarIssueObservationRecord(
-                                issue_key=record.issue_key,
-                                observed_at=observed_at,
-                                status=record.status,
-                                resolution=record.resolution,
-                                severity=record.severity,
-                                component=record.component,
-                                branch=record.branch,
-                                message=record.message,
-                            ),
-                        )
-                        observations_recorded += 1
+                page_result = self._sync_project_history_page(
+                    store=store,
+                    repository_key=repository_key,
+                    raw_issues=raw_issues,
+                    previous_cursor=previous_cursor,
+                    latest_update=latest_update,
+                )
+                issues_seen += page_result.issues_seen
+                issues_upserted += page_result.issues_upserted
+                observations_recorded += page_result.observations_recorded
+                latest_update = page_result.latest_update
 
                 if latest_update is not None:
                     store.upsert_sync_state(
@@ -129,7 +114,7 @@ class SonarQubeClient:
                         )
                     )
 
-                if should_stop:
+                if page_result.should_stop:
                     break
                 if not isinstance(total, int) or page_number * page_size >= total:
                     break
@@ -143,6 +128,81 @@ class SonarQubeClient:
                 observations_recorded=observations_recorded,
                 latest_update=latest_update,
             )
+
+    def _sync_project_history_page(
+        self,
+        *,
+        store: HistoryStore,
+        repository_key: str,
+        raw_issues: list[object],
+        previous_cursor: str | None,
+        latest_update: str | None,
+    ) -> SonarProjectHistoryPageResult:
+        should_stop = False
+        issues_seen = 0
+        issues_upserted = 0
+        observations_recorded = 0
+
+        for raw_issue in raw_issues:
+            if not isinstance(raw_issue, Mapping):
+                continue
+            issues_seen += 1
+            updated_at = self._optional_string(raw_issue, "updateDate")
+            if previous_cursor and updated_at and updated_at <= previous_cursor:
+                should_stop = True
+                continue
+            if updated_at and (latest_update is None or updated_at > latest_update):
+                latest_update = updated_at
+
+            synced = self._sync_project_issue_record(
+                store=store,
+                repository_key=repository_key,
+                raw_issue=raw_issue,
+                updated_at=updated_at,
+            )
+            if synced is None:
+                continue
+            issues_upserted += 1
+            observations_recorded += synced
+
+        return SonarProjectHistoryPageResult(
+            should_stop=should_stop,
+            issues_seen=issues_seen,
+            issues_upserted=issues_upserted,
+            observations_recorded=observations_recorded,
+            latest_update=latest_update,
+        )
+
+    def _sync_project_issue_record(
+        self,
+        *,
+        store: HistoryStore,
+        repository_key: str,
+        raw_issue: Mapping[str, object],
+        updated_at: str | None,
+    ) -> int | None:
+        if (record := self._map_issue_record(raw_issue)) is None:
+            return None
+
+        store.upsert_sonar_issue(repository_key, record)
+        observed_at = updated_at or record.created_at
+        if observed_at is None:
+            return 0
+
+        store.record_sonar_issue_observation(
+            repository_key,
+            SonarIssueObservationRecord(
+                issue_key=record.issue_key,
+                observed_at=observed_at,
+                status=record.status,
+                resolution=record.resolution,
+                severity=record.severity,
+                component=record.component,
+                branch=record.branch,
+                message=record.message,
+            ),
+        )
+        return 1
 
     def _build_issues_request(self, pull_request_number: int) -> Request:
         params = urlencode(
@@ -239,20 +299,13 @@ class SonarQubeClient:
             clean_code_attribute_category=issue.clean_code_attribute_category or None,
             status=SonarQubeClient._optional_string(payload, "status"),
             resolution=SonarQubeClient._optional_string(payload, "resolution"),
-            created_at=SonarQubeClient._extract_timestamp(payload, "creationDate"),
-            updated_at=SonarQubeClient._extract_timestamp(payload, "updateDate"),
+            created_at=SonarQubeClient._optional_string(payload, "creationDate"),
+            updated_at=SonarQubeClient._optional_string(payload, "updateDate"),
             branch=SonarQubeClient._optional_string(payload, "branch"),
         )
-    
-    @staticmethod
-    def _optional_string(payload: Mapping[str, object], key: str) -> str | None:
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return None
 
     @staticmethod
-    def _extract_timestamp(payload: Mapping[str, object], key: str) -> str | None:
+    def _optional_string(payload: Mapping[str, object], key: str) -> str | None:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()

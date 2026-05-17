@@ -172,50 +172,7 @@ class IssueEnricher:
                 "Local repository history mode requires a configured repository store."
             )
 
-        if self._enable_local_history:
-            local_sonar = self._actionable_or_none(
-                self._local_history_retriever.find_context(issue)
-                if self._local_history_retriever is not None
-                else None
-            )
-            local_git = self._actionable_or_none(
-                self._local_git_history_retriever.find_context(issue)
-                if self._local_git_history_retriever is not None
-                else None
-            )
-            local_prs = self._actionable_or_none(
-                self._local_pr_history_retriever.find_context(issue)
-                if self._local_pr_history_retriever is not None
-                else None
-            )
-            local_review_comments = self._actionable_or_none(
-                self._local_review_comment_history_retriever.find_context(issue)
-                if self._local_review_comment_history_retriever is not None
-                else None
-            )
-            historical_context = CombinedHistoricalContext(
-                local_sonar=local_sonar,
-                local_git=local_git,
-                local_prs=local_prs,
-                local_review_comments=local_review_comments,
-                global_dataset=None,
-            )
-            if historical_context.preferred_source_name() is None:
-                historical_context = CombinedHistoricalContext(
-                    local_sonar=local_sonar,
-                    local_git=local_git,
-                    local_prs=local_prs,
-                    local_review_comments=local_review_comments,
-                    global_dataset=self._actionable_or_none(
-                        self._global_history_retriever.find_context(issue)
-                    ),
-                )
-        else:
-            historical_context = CombinedHistoricalContext(
-                global_dataset=self._actionable_or_none(
-                    self._global_history_retriever.find_context(issue)
-                )
-            )
+        historical_context = self._historical_context(issue)
         active_history = self._active_history(historical_context)
         active_source = self._active_source(historical_context)
         guidance = self._build_guidance(issue, active_history, active_source)
@@ -229,6 +186,51 @@ class IssueEnricher:
             guidance=guidance,
             historical_context=historical_context,
         )
+
+    def _historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
+        if not self._enable_local_history:
+            return CombinedHistoricalContext(
+                global_dataset=self._actionable_or_none(
+                    self._global_history_retriever.find_context(issue)
+                )
+            )
+
+        local_context = self._local_historical_context(issue)
+        if local_context.preferred_source_name() is not None:
+            return local_context
+
+        return CombinedHistoricalContext(
+            local_sonar=local_context.local_sonar,
+            local_git=local_context.local_git,
+            local_prs=local_context.local_prs,
+            local_review_comments=local_context.local_review_comments,
+            global_dataset=self._actionable_or_none(
+                self._global_history_retriever.find_context(issue)
+            ),
+        )
+
+    def _local_historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
+        return CombinedHistoricalContext(
+            local_sonar=self._retrieved_context(self._local_history_retriever, issue),
+            local_git=self._retrieved_context(self._local_git_history_retriever, issue),
+            local_prs=self._retrieved_context(self._local_pr_history_retriever, issue),
+            local_review_comments=self._retrieved_context(
+                self._local_review_comment_history_retriever,
+                issue,
+            ),
+            global_dataset=None,
+        )
+
+    def _retrieved_context(
+        self,
+        retriever: object,
+        issue: SonarIssue,
+    ) -> HistoricalContext | None:
+        if retriever is None:
+            return None
+
+        find_context = getattr(retriever, "find_context")
+        return self._actionable_or_none(find_context(issue))
 
     @staticmethod
     def _active_history(
@@ -386,7 +388,7 @@ class IssueEnricher:
         issue_pattern: str,
         historical_context: HistoricalContext | None,
         history_source: str | None,
-    ) -> str:
+    ) -> str | None:
         if issue_pattern == "loop_variable_capture":
             return self._pick_required_option(
                 issue_pattern,

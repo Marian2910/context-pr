@@ -110,7 +110,6 @@ def analyze(
     if settings.local_history_enabled:
         assert history_store is not None
         local_git_enabled = _sync_local_history(
-            settings=settings,
             history_store=history_store,
             repository_key=pull_request.repository,
             github_client=github_client,
@@ -167,7 +166,6 @@ def sync_history() -> None:
     github_client = GitHubClient(settings)
     sonar_client = SonarQubeClient(settings)
     _sync_local_history(
-        settings=settings,
         history_store=history_store,
         repository_key=settings.github_repository or "",
         github_client=github_client,
@@ -181,7 +179,6 @@ def sync_history() -> None:
 
 def _sync_local_history(
     *,
-    settings: Settings,
     history_store: HistoryStore,
     repository_key: str,
     github_client: GitHubClient,
