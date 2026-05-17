@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import re
 from typing import Protocol
 
 from contextpr.enrichment import IssueEnrichment
@@ -12,9 +10,8 @@ from contextpr.models import (
     PullRequestRef,
     SonarIssue,
 )
-
-COMMENT_MARKER_PREFIX = "<!-- contextpr:issue="
-TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
+from dataclasses import dataclass
+from contextpr.services.review_comments import COMMENT_MARKER_PREFIX, ReviewCommentComposer
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +65,12 @@ class AnalysisService:
         github_client: GitHubAnalysisClient,
         sonar_client: SonarAnalysisClient,
         issue_enricher: IssueEnrichmentClient | None = None,
+        review_comment_composer: ReviewCommentComposer | None = None,
     ) -> None:
         self._github_client = github_client
         self._sonar_client = sonar_client
         self._issue_enricher = issue_enricher
+        self._review_comment_composer = review_comment_composer or ReviewCommentComposer()
 
     def analyze_pull_request(
         self,
@@ -85,11 +84,11 @@ class AnalysisService:
             for pr_file in pull_request_files
         }
         issues = self._sonar_client.fetch_pull_request_issues(pull_request.number)
-        comments = [
+        drafts = [
             comment
             for issue in issues
             if (
-                comment := self._issue_to_comment(
+                comment := self._review_comment_composer.issue_to_draft(
                     issue,
                     changed_lines=changed_lines_by_file.get(issue.location.path, set()),
                     enrichment=(
@@ -101,6 +100,7 @@ class AnalysisService:
             )
             is not None
         ]
+        comments = self._review_comment_composer.drafts_to_comments(drafts)
 
         deleted_comments = 0
         if not dry_run:
@@ -119,99 +119,65 @@ class AnalysisService:
         )
 
     @staticmethod
-    def _issue_to_comment(
-        issue: SonarIssue,
-        changed_lines: set[int],
-        enrichment: IssueEnrichment | None,
-    ) -> GitHubReviewComment | None:
-        line = issue.location.line
-        if line is None or line not in changed_lines:
-            return None
-
-        start_line = AnalysisService._comment_start_line(issue, changed_lines)
-        end_line = (
-            issue.location.end_line
-            if start_line is not None and issue.location.end_line is not None
-            else line
-        )
-        return GitHubReviewComment(
-            path=issue.location.path,
-            line=end_line,
-            body=AnalysisService._build_comment_body(issue, enrichment),
-            start_line=start_line,
-            start_side="RIGHT" if start_line is not None else None,
-        )
-
-    @staticmethod
     def _comment_start_line(issue: SonarIssue, changed_lines: set[int]) -> int | None:
-        start_line = issue.location.line
-        end_line = issue.location.end_line
-        if start_line is None or end_line is None or end_line <= start_line:
-            return None
-
-        issue_lines = set(range(start_line, end_line + 1))
-        if issue_lines.issubset(changed_lines):
-            return start_line
-
-        return None
+        return ReviewCommentComposer.comment_start_line(issue, changed_lines)
 
     @staticmethod
     def _build_comment_body(
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
+        *,
+        duplicate_reference: str | None = None,
     ) -> str:
-        note = AnalysisService._reviewer_note(issue, enrichment)
-        return "\n\n".join((note, f"{COMMENT_MARKER_PREFIX}{issue.key} -->"))
+        return ReviewCommentComposer().build_comment_body(
+            issue,
+            enrichment,
+            duplicate_reference=duplicate_reference,
+        )
 
     @staticmethod
     def _reviewer_note(
         issue: SonarIssue,
         enrichment: IssueEnrichment | None,
+        *,
+        duplicate_reference: str | None = None,
     ) -> str:
-        if enrichment is None:
-            return issue.message
-
-        guidance = enrichment.guidance
-        if guidance.level is guidance.level.MINIMAL:
-            sections = [issue.message]
-            if guidance.evidence_note is not None:
-                sections.append(guidance.evidence_note)
-            return " ".join(sections)
-
-        sections = AnalysisService._deduplicated_sections(
-            guidance.explanation,
-            guidance.next_step,
-            guidance.evidence_note,
+        return ReviewCommentComposer().reviewer_note(
+            issue,
+            enrichment,
+            duplicate_reference=duplicate_reference,
         )
-        return " ".join(sections[:2]) if sections else issue.message
+
+    @staticmethod
+    def _issue_anchor(issue: SonarIssue, guidance_level: object) -> str | None:
+        return ReviewCommentComposer.issue_anchor(issue, guidance_level)
 
     @staticmethod
     def _deduplicated_sections(*sections: str | None) -> list[str]:
-        kept_sections: list[str] = []
-        for section in sections:
-            if section is None:
-                continue
-            normalized = section.strip()
-            if not normalized:
-                continue
-            if any(
-                AnalysisService._sections_overlap(normalized, existing)
-                for existing in kept_sections
-            ):
-                continue
-            kept_sections.append(normalized)
-        return kept_sections
+        return ReviewCommentComposer().deduplicated_sections(*sections)
+
+    @staticmethod
+    def _duplicate_signature(
+        issue: SonarIssue,
+        enrichment: IssueEnrichment | None,
+    ) -> str:
+        return ReviewCommentComposer().duplicate_signature(issue, enrichment)
+
+    @staticmethod
+    def _issue_reference(issue: SonarIssue) -> str:
+        return ReviewCommentComposer.issue_reference(issue)
+
+    @staticmethod
+    def _normalize_sentence(text: str) -> str:
+        return ReviewCommentComposer.normalize_sentence(text)
+
+    @staticmethod
+    def _normalize_section(section: str | None) -> str:
+        return ReviewCommentComposer.normalize_section(section)
 
     @staticmethod
     def _sections_overlap(left: str, right: str) -> bool:
-        left_tokens = set(TOKEN_PATTERN.findall(left.lower()))
-        right_tokens = set(TOKEN_PATTERN.findall(right.lower()))
-        if not left_tokens or not right_tokens:
-            return False
-
-        overlap = len(left_tokens & right_tokens)
-        smaller_size = min(len(left_tokens), len(right_tokens))
-        return overlap / smaller_size >= 0.6
+        return ReviewCommentComposer.sections_overlap(left, right)
 
     def _delete_previous_contextpr_comments(self, pull_request: PullRequestRef) -> int:
         author_login = self._github_client.get_authenticated_user_login()
@@ -219,7 +185,8 @@ class AnalysisService:
         managed_comments = [
             comment
             for comment in existing_comments
-            if comment.author_login == author_login and COMMENT_MARKER_PREFIX in comment.body
+            if comment.author_login == author_login
+            and COMMENT_MARKER_PREFIX in comment.body
         ]
 
         for comment in managed_comments:

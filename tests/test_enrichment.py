@@ -1,20 +1,17 @@
-import json
 from pathlib import Path
-from urllib import error
 
 import pytest
 
 from contextpr.enrichment import (
     CombinedHistoricalContext,
     DeveloperGuidance,
+    DeterministicGuidanceMessageService,
     GlobalDatasetHistoryRetriever,
     GuidanceLevel,
     HistoricalContext,
     IssueEnricher,
     IssueContextEvidence,
-    LLMVerbalizerSettings,
     LocalPullRequestHistoryRetriever,
-    LightweightLLMGuidanceVerbalizer,
 )
 from contextpr.models import IssueLocation, SonarIssue
 from contextpr.persistence import (
@@ -262,7 +259,7 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
     assert enrichment.guidance.explanation == (
-        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
+        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
     )
     assert enrichment.guidance.next_step is None
     assert enrichment.guidance.evidence_note == (
@@ -389,47 +386,6 @@ def test_issue_enricher_uses_minimal_history_note_for_trivial_issue(
     enrichment = enricher.enrich(_issue())
 
     assert enrichment is None
-
-
-def test_issue_enricher_skips_llm_for_minimal_guidance(
-    tmp_path: Path,
-) -> None:
-    dataset_path = tmp_path / "issues.csv"
-    rows = [
-        (
-            "message,rule,type,tags,clean_code_attribute,"
-            "clean_code_attribute_category,impacts,component,"
-            "ccs_classification,creation_date"
-        )
-    ]
-    rows.extend(
-        (
-            "\"Remove unused function parameter\",python:S1172,CODE_SMELL,"
-            "\"['unused']\",CLEAR,INTENTIONAL,\"[{'severity': 'LOW'}]\","
-            f"repo:src/app.py,refactor,2024-01-0{index}"
-        )
-        for index in range(1, 6)
-    )
-    dataset_path.write_text("\n".join(rows), encoding="utf-8")
-
-    class CountingVerbalizer:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def rewrite(self, issue: SonarIssue, guidance: object, historical_context: object) -> object:
-            self.calls += 1
-            return guidance
-
-    verbalizer = CountingVerbalizer()
-    enricher = IssueEnricher(
-        dataset_path=dataset_path,
-        guidance_verbalizer=verbalizer,
-    )
-
-    enrichment = enricher.enrich(_issue())
-
-    assert enrichment is None
-    assert verbalizer.calls == 0
 
 
 def test_combined_historical_context_prefers_local_sources_before_global() -> None:
@@ -633,7 +589,7 @@ def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
     assert enrichment.guidance.explanation == (
-        "These branches currently do the same thing, so collapse them only if the separation is not preserving a behavior difference."
+        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
     )
     assert enrichment.guidance.evidence_note == (
         "Similar local cases in this file often stayed unresolved across later changes, so decide "
@@ -1149,431 +1105,9 @@ def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Pat
     assert enrichment is None
 
 
-def test_lightweight_llm_verbalizer_rewrites_existing_guidance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-
-    captured_request: dict[str, object] = {}
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return (
-                b'{"candidates":[{"content":{"parts":[{"text":"{\\"explanation\\":\\"Check whether this branch difference is intentional.\\",\\"evidence_note\\":\\"Similar local cases were usually handled as cleanup.\\"}"}]}}]}'
-            )
-
-    def fake_urlopen(http_request: object, **_kwargs: object) -> FakeResponse:
-        captured_request["url"] = getattr(http_request, "full_url")
-        captured_request["headers"] = dict(getattr(http_request, "headers"))
-        captured_request["body"] = getattr(http_request, "data")
-        return FakeResponse()
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        fake_urlopen,
-    )
-
-    enrichment = IssueEnricher(
-        dataset_path=Path("missing.csv"),
-        guidance_verbalizer=verbalizer,
-    ).enrich(
-        SonarIssue(
-            key="issue-llm",
-            rule="python:S9999",
-            severity="CRITICAL",
-            message="Possible broken logic path",
-            location=IssueLocation(path="src/app.py", line=14),
-            issue_type="BUG",
-            tags=("suspicious",),
-        )
-    )
-
-    assert enrichment is not None
-    assert enrichment.guidance.explanation == "Check whether this branch difference is intentional."
-    assert enrichment.guidance.evidence_note is None
-    assert captured_request["url"] == (
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
-    )
-    headers = captured_request["headers"]
-    assert isinstance(headers, dict)
-    assert headers["Content-type"] == "application/json"
-    assert headers["X-goog-api-key"] == "secret"
-    request_body = captured_request["body"]
-    assert isinstance(request_body, bytes)
-    parsed_body = json.loads(request_body.decode("utf-8"))
-    assert parsed_body["contents"][0]["role"] == "user"
-    assert parsed_body["generationConfig"]["responseMimeType"] == "application/json"
-    assert parsed_body["generationConfig"]["maxOutputTokens"] == 160
-    request_text = parsed_body["contents"][0]["parts"][0]["text"]
-    request_facts = json.loads(request_text)
-    assert request_facts["review_goal"] == (
-        "Help the reviewer decide whether the warning may reflect a behavior change risk."
-    )
-    assert request_facts["first_check"] in (
-        "Verify the surrounding logic before changing the flagged code path.",
-        "Check the surrounding logic to confirm the current behavior is really intended.",
-        "Validate the code path against the expected behavior before changing it.",
-        "Review the flagged logic path against the expected behavior before editing it.",
-    )
-    assert request_facts["rewrite_targets"]["explanation"] in (
-        "This may affect runtime behavior, so verify the intended outcome before editing it.",
-        "Review this path carefully before changing it because the current behavior may be intentional.",
-        "Validate the expected behavior here before rewriting the code around it.",
-        "Check what behavior this code is preserving before you refactor it.",
-    )
-    assert request_facts["rewrite_targets"]["evidence_note"] is None
-
-
-def test_lightweight_llm_verbalizer_recovers_json_wrapped_in_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return (
-                b'{"candidates":[{"content":{"parts":[{"text":"Here is the rewritten JSON:\\n```json\\n{\\"explanation\\":\\"Validate whether the branch difference is intentional.\\",\\"evidence_note\\":\\"Similar local cases were often cleanup-oriented.\\"}\\n```"}]}}]}'
-            )
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda *_args, **_kwargs: FakeResponse(),
-    )
-
-    enrichment = IssueEnricher(
-        dataset_path=Path("missing.csv"),
-        guidance_verbalizer=verbalizer,
-    ).enrich(
-        SonarIssue(
-            key="issue-llm-fallback",
-            rule="python:S9999",
-            severity="CRITICAL",
-            message="Possible broken logic path",
-            location=IssueLocation(path="src/app.py", line=14),
-            issue_type="BUG",
-            tags=("suspicious",),
-        )
-    )
-
-    assert enrichment is not None
-    assert enrichment.guidance.explanation == "Validate whether the branch difference is intentional."
-    assert enrichment.guidance.evidence_note is None
-
-
-def test_lightweight_llm_verbalizer_rejects_overconfident_history_rewrite(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return (
-                b'{"candidates":[{"content":{"parts":[{"text":"{\\"evidence_note\\":\\"Similar cases definitely require cleanup.\\"}"}]}}]}'
-            )
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda *_args, **_kwargs: FakeResponse(),
-    )
-
-    dataset_path = tmp_path / "issues.csv"
-    dataset_path.write_text(
-        "\n".join(
-            [
-                (
-                    "message,rule,type,tags,clean_code_attribute,"
-                    "clean_code_attribute_category,impacts,component,"
-                    "ccs_classification,creation_date"
-                ),
-                (
-                    "\"Remove this if statement or edit its code blocks so that "
-                    "they're not all the same.\","
-                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
-                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,fix,2024-01-01"
-                ),
-                (
-                    "\"Remove this if statement or edit its code blocks so that "
-                    "they're not all the same.\","
-                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
-                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,fix,2024-01-02"
-                ),
-                (
-                    "\"Remove this if statement or edit its code blocks so that "
-                    "they're not all the same.\","
-                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
-                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,fix,2024-01-03"
-                ),
-                (
-                    "\"Remove this if statement or edit its code blocks so that "
-                    "they're not all the same.\","
-                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
-                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,docs,2024-01-04"
-                ),
-                (
-                    "\"Remove this if statement or edit its code blocks so that "
-                    "they're not all the same.\","
-                    "python:S3923,CODE_SMELL,\"['design']\",CLEAR,INTENTIONAL,"
-                    "\"[{'severity': 'HIGH'}]\",repo:src/app.py,docs,2024-01-05"
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    enrichment = IssueEnricher(
-        dataset_path=dataset_path,
-        guidance_verbalizer=verbalizer,
-    ).enrich(
-        SonarIssue(
-            key="issue-llm-guardrail",
-            rule="python:S3923",
-            severity="MAJOR",
-            message="Sonar wording changed for this rule.",
-            location=IssueLocation(path="src/app.py", line=14),
-            issue_type="CODE_SMELL",
-            tags=("design",),
-        )
-    )
-
-    assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Historically similar matches for the same file path were split between "
-        "behavior-sensitive changes and nearby follow-up changes, so inspect the surrounding logic before simplifying it."
-    )
-
-
-def test_lightweight_llm_verbalizer_skips_empty_rewrite_targets() -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-    guidance = DeveloperGuidance(
-        level=GuidanceLevel.DETAILED,
-        next_step="Check the surrounding logic first.",
-    )
-
-    rewritten = verbalizer.rewrite(
-        _issue(),
-        guidance,
-        historical_context=None,
-    )
-
-    assert rewritten == guidance
-
-
-def test_lightweight_llm_verbalizer_falls_back_when_request_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-    guidance = DeveloperGuidance(
-        level=GuidanceLevel.DETAILED,
-        explanation="Check whether the branch difference is intentional.",
-        evidence_note="Historically similar cases were often handled later during small refactors.",
-    )
-
-    def fail_urlopen(*_args: object, **_kwargs: object) -> object:
-        raise error.URLError("network timeout")
-
-    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
-
-    rewritten = verbalizer.rewrite(
-        _issue(),
-        guidance,
-        historical_context=None,
-    )
-
-    assert rewritten == guidance
-
-
-def test_lightweight_llm_verbalizer_supports_openai_compatible_api(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://llm.example/v1/chat/completions/",
-            api_key="secret",
-            model="gpt-4o-mini",
-        )
-    )
-    captured_request: dict[str, object] = {}
-
-    class FakeResponse:
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return (
-                b'{"choices":[{"message":{"content":"{\\"explanation\\":\\"Review the branch behavior first.\\"}"}}]}'
-            )
-
-    def fake_urlopen(http_request: object, **_kwargs: object) -> FakeResponse:
-        captured_request["url"] = getattr(http_request, "full_url")
-        captured_request["headers"] = dict(getattr(http_request, "headers"))
-        captured_request["body"] = getattr(http_request, "data")
-        return FakeResponse()
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-
-    guidance = DeveloperGuidance(
-        level=GuidanceLevel.DETAILED,
-        explanation="Check whether the branch difference is intentional.",
-        evidence_note=None,
-    )
-    rewritten = verbalizer.rewrite(
-        SonarIssue(
-            key="openai-issue",
-            rule="python:S9999",
-            severity="CRITICAL",
-            message="Possible broken logic path",
-            location=IssueLocation(path="src/app.py", line=14),
-            issue_type="BUG",
-        ),
-        guidance,
-        historical_context=None,
-    )
-
-    assert rewritten.explanation == "Review the branch behavior first."
-    assert captured_request["url"] == "https://llm.example/v1/chat/completions"
-    headers = captured_request["headers"]
-    assert isinstance(headers, dict)
-    assert headers["Authorization"] == "Bearer secret"
-    assert headers["Content-type"] == "application/json"
-    request_body = captured_request["body"]
-    assert isinstance(request_body, bytes)
-    parsed_body = json.loads(request_body.decode("utf-8"))
-    assert parsed_body["model"] == "gpt-4o-mini"
-    assert parsed_body["messages"][0]["role"] == "system"
-
-
-def test_lightweight_llm_verbalizer_helper_branches() -> None:
-    verbalizer = LightweightLLMGuidanceVerbalizer(
-        LLMVerbalizerSettings(
-            api_url="https://generativelanguage.googleapis.com/v1beta",
-            api_key="secret",
-            model="gemini-flash-latest",
-        )
-    )
-
-    persistent_history = HistoricalContext(
-        sample_size=6,
-        same_rule_matches=3,
-        same_scope_matches=6,
-        same_path_family_matches=6,
-        strong_match_count=4,
-        dominant_maintenance="cleanup",
-        dominant_maintenance_share=0.6667,
-        maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
-        dominant_disposition="persistent",
-        dominant_disposition_share=0.6667,
-        disposition_distribution=(("persistent", 4), ("resolved", 2)),
-    )
-    assert (
-        verbalizer._review_goal(
-            SonarIssue(
-                key="issue-persistent",
-                rule="python:S9999",
-                severity="MAJOR",
-                message="Potential issue",
-                location=IssueLocation(path="src/app.py", line=10),
-                issue_type="CODE_SMELL",
-            ),
-            DeveloperGuidance(
-                level=GuidanceLevel.CONTEXTUAL,
-                explanation="Check whether the branch difference is intentional.",
-            ),
-            persistent_history,
-        )
-        == (
-            "Help the reviewer judge whether this debt tends to linger in this area "
-            "and whether it is worth paying down now."
-        )
-    )
-    assert verbalizer._request_url() == (
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
-    )
-    assert verbalizer._extract_json_object("no json here") is None
-    assert verbalizer._response_preview("x " * 200).endswith("...")
-    with pytest.raises(TypeError, match="Expected text content"):
-        verbalizer._parse_json_text({"not": "text"})
-    with pytest.raises(json.JSONDecodeError):
-        verbalizer._parse_json_text("no json here")
-    assert (
-        verbalizer._pick_rewrite(
-            {"explanation": "   "},
-            "explanation",
-            "Check whether the branch difference is intentional.",
-        )
-        == "Check whether the branch difference is intentional."
-    )
-    assert (
-        verbalizer._pick_rewrite(
-            {"explanation": "Sonar says to simplify the conditional."},
-            "explanation",
-            "Check whether the branch difference is intentional.",
-        )
-        == "Check whether the branch difference is intentional."
-    )
-    assert (
-        verbalizer._pick_rewrite(
-            {"evidence_note": "Similar cases required cleanup."},
-            "evidence_note",
-            "Historically similar cases were often handled later during small refactors.",
-        )
-        == "Historically similar cases were often handled later during small refactors."
-    )
-
-
 def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
     enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv")
+    message_service = DeterministicGuidanceMessageService()
 
     assert enricher._issue_pattern(
         SonarIssue(
@@ -1584,7 +1118,7 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             location=IssueLocation(path="src/app.py", line=10),
             issue_type="CODE_SMELL",
         )
-    ) == "duplicated_literal"
+    ) == "self_explanatory_cleanup"
     assert enricher._maintainability_focus(
         HistoricalContext(
             sample_size=6,
@@ -1640,9 +1174,11 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
         (("cleanup", 1), ("behavior", 1)),
         sample_size=0,
     ) is False
+    assert message_service.is_local_history_source("local_prs") is True
+    assert message_service.is_local_history_source("global_dataset") is False
 
 
-def test_issue_enricher_adds_direct_guidance_for_loop_variable_capture(
+def test_issue_enricher_adds_generic_guidance_for_behavior_sensitive_cleanup(
     tmp_path: Path,
 ) -> None:
     enricher = IssueEnricher(dataset_path=tmp_path / "missing.csv")
@@ -1662,18 +1198,12 @@ def test_issue_enricher_adds_direct_guidance_for_loop_variable_capture(
     )
 
     assert enrichment is not None
-    assert enrichment.guidance.explanation in (
-        "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here.",
-        "Bind `prefix` at lambda creation time so this closure does not pick up a later loop value.",
-        "This lambda should capture the current `prefix` value explicitly, or a later loop iteration may change what it reads.",
-        "Make the lambda bind the current `prefix` value instead of relying on the loop variable after it changes.",
-    )
-    assert enrichment.guidance.next_step in (
-        "Pass `prefix` into the lambda as a default argument, or wrap the lambda in a helper that binds the current value.",
-        "Add `prefix` as a default argument to the parent lambda so each iteration keeps its own value.",
-        "Bind `prefix` explicitly in the lambda signature instead of reading the loop variable after it changes.",
-        "Capture the current `prefix` value through a default argument or helper function before the next iteration runs.",
-    )
+    assert enrichment.guidance.explanation is not None
+    assert "prefix" not in enrichment.guidance.explanation
+    assert "behavior" in enrichment.guidance.explanation.lower() or "state" in enrichment.guidance.explanation.lower()
+    assert enrichment.guidance.next_step is not None
+    assert "prefix" not in enrichment.guidance.next_step
+    assert "behavior" in enrichment.guidance.next_step.lower() or "state" in enrichment.guidance.next_step.lower()
 
 
 def _issue() -> SonarIssue:

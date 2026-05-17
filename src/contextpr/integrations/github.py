@@ -25,6 +25,7 @@ from contextpr.persistence import (
     PullRequestReviewCommentRecord,
     SyncStateRecord,
 )
+from contextpr.services.review_comments import COMMENT_MARKER_PREFIX
 
 logger = logging.getLogger(__name__)
 LOCAL_GITHUB_SYNC_SOURCE = "local_github_history"
@@ -314,6 +315,7 @@ class GitHubClient:
                 author_role=comment.author_login,
             )
             for comment in self.list_existing_review_comments(pull_request)
+            if COMMENT_MARKER_PREFIX not in comment.body
         )
         store.upsert_pull_request(
             repository_key,

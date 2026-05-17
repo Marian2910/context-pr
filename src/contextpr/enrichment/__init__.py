@@ -9,7 +9,7 @@ from contextpr.enrichment.history import (
     LocalReviewCommentHistoryRetriever,
     LocalSonarHistoryRetriever,
 )
-from contextpr.enrichment.llm import LLMVerbalizerSettings, LightweightLLMGuidanceVerbalizer
+from contextpr.enrichment.messages import DeterministicGuidanceMessageService
 from contextpr.enrichment.nlp import (
     DeveloperGuidance,
     GuidanceLevel,
@@ -27,10 +27,9 @@ __all__ = [
     "IssueEnricher",
     "IssueEnrichment",
     "IssueHistoryRetriever",
+    "DeterministicGuidanceMessageService",
     "LocalGitHistoryRetriever",
     "LocalPullRequestHistoryRetriever",
     "LocalReviewCommentHistoryRetriever",
     "LocalSonarHistoryRetriever",
-    "LLMVerbalizerSettings",
-    "LightweightLLMGuidanceVerbalizer",
 ]

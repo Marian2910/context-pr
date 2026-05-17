@@ -204,6 +204,13 @@ def test_sync_repository_history_persists_pull_requests_files_and_review_comment
                     "line": 7,
                     "body": "Please confirm this is behavior-safe.",
                     "user": {"login": "reviewer-1"},
+                },
+                {
+                    "id": 11,
+                    "path": "src/app.py",
+                    "line": 8,
+                    "body": "ContextPR note\n\n<!-- contextpr:issue=issue-1 -->",
+                    "user": {"login": "contextpr-app[bot]"},
                 }
             ]
         return []
