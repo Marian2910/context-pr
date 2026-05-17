@@ -15,7 +15,6 @@ DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_LOCAL_HISTORY_DB_PATH = Path.home() / ".contextpr" / "history.db"
-DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOCAL_HISTORY_ENABLED = False
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
@@ -39,10 +38,6 @@ class Settings:
     sonar_project_key: str | None = None
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
     local_history_db_path: Path = DEFAULT_LOCAL_HISTORY_DB_PATH
-    llm_api_url: str | None = None
-    llm_api_key: str | None = None
-    llm_model: str | None = None
-    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     local_history_enabled: bool = DEFAULT_LOCAL_HISTORY_ENABLED
     log_level: str = DEFAULT_LOG_LEVEL
 
@@ -83,14 +78,6 @@ class Settings:
                 "CONTEXTPR_LOCAL_HISTORY_DB_PATH",
                 default=DEFAULT_LOCAL_HISTORY_DB_PATH,
             ),
-            llm_api_url=_read_optional(env, "CONTEXTPR_LLM_API_URL"),
-            llm_api_key=_read_optional(env, "CONTEXTPR_LLM_API_KEY"),
-            llm_model=_read_optional(env, "CONTEXTPR_LLM_MODEL"),
-            llm_timeout_seconds=_read_float(
-                env,
-                "CONTEXTPR_LLM_TIMEOUT_SECONDS",
-                default=DEFAULT_LLM_TIMEOUT_SECONDS,
-            ),
             local_history_enabled=_read_bool(
                 env,
                 "CONTEXTPR_ENABLE_LOCAL_HISTORY",
@@ -128,10 +115,6 @@ class Settings:
         if self.github_token_enabled:
             return "token"
         return "none"
-
-    @property
-    def llm_enabled(self) -> bool:
-        return bool(self.llm_api_url and self.llm_api_key and self.llm_model)
 
     @property
     def sonar_enabled(self) -> bool:
@@ -183,21 +166,6 @@ def _read_path(
         return default
 
     return Path(value).expanduser()
-
-
-def _read_float(
-    environ: Mapping[str, str],
-    key: str,
-    *,
-    default: float,
-) -> float:
-    value = _read_optional(environ, key)
-    if value is None:
-        return default
-
-    return float(value)
-
-
 def _read_bool(
     environ: Mapping[str, str],
     key: str,

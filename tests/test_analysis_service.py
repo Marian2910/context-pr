@@ -13,7 +13,7 @@ from contextpr.models import (
     PullRequestRef,
     SonarIssue,
 )
-from contextpr.services import AnalysisService
+from contextpr.services import AnalysisService, ReviewCommentComposer
 
 
 class FakeGitHubClient:
@@ -69,6 +69,7 @@ class FakeSonarClient:
                 severity="MAJOR",
                 message="First issue",
                 location=IssueLocation(path="src/app.py", line=11, end_line=12),
+                issue_type="CODE_SMELL",
             ),
             SonarIssue(
                 key="issue-2",
@@ -141,8 +142,9 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert comments[0].start_line == 11
     assert comments[0].line == 12
     assert "Sonar reported" not in comments[0].body
+    assert "First issue." in comments[0].body
     assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
-    assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." in comments[0].body
+    assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." not in comments[0].body
     assert "Historically similar cases usually disappeared during later small refactors." not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
@@ -167,8 +169,8 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     assert github_client.deleted_comment_ids == []
 
 
-def test_issue_to_comment_falls_back_to_single_line_when_range_is_not_fully_added() -> None:
-    comment = AnalysisService._issue_to_comment(
+def test_issue_to_draft_falls_back_to_single_line_when_range_is_not_fully_added() -> None:
+    comment = ReviewCommentComposer().issue_to_draft(
         SonarIssue(
             key="issue-range",
             rule="python:S3923",
@@ -182,7 +184,7 @@ def test_issue_to_comment_falls_back_to_single_line_when_range_is_not_fully_adde
 
     assert comment is not None
     assert comment.start_line is None
-    assert comment.line == 11
+    assert comment.end_line == 11
 
 
 def test_extract_added_lines_handles_multiple_hunks_and_deletions() -> None:
@@ -230,11 +232,12 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
             severity="MAJOR",
             message="Loop variable capture",
             location=IssueLocation(path="src/app.py", line=20),
+            issue_type="CODE_SMELL",
         ),
         IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.DETAILED,
-                explanation="Capture `prefix` when the lambda is created.",
+                explanation="Treat this as behavior-sensitive cleanup and keep the current outcome intact while simplifying it.",
             ),
             historical_context=None,
         ),
@@ -244,7 +247,10 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
         'Remove the unused local variable "name". '
         "Historically similar cases usually disappeared during later small refactors."
     )
-    assert single_sentence_note == "Capture `prefix` when the lambda is created."
+    assert single_sentence_note == (
+        "Loop variable capture. "
+        "Treat this as behavior-sensitive cleanup and keep the current outcome intact while simplifying it."
+    )
 
 
 def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
@@ -255,15 +261,16 @@ def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
             severity="MAJOR",
             message="Loop variable capture",
             location=IssueLocation(path="src/app.py", line=20),
+            issue_type="CODE_SMELL",
         ),
         IssueEnrichment(
             guidance=DeveloperGuidance(
                 level=GuidanceLevel.DETAILED,
                 explanation=(
-                    "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here."
+                    "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it."
                 ),
                 next_step=(
-                    "Pass `prefix` into the lambda as a default argument so later loop iterations do not change the value it sees here."
+                    "Simplify it only after you make the behavior-carrying state explicit and verify the affected path."
                 ),
             ),
             historical_context=None,
@@ -271,7 +278,8 @@ def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
     )
 
     assert note == (
-        "Capture `prefix` when the lambda is created, otherwise later loop iterations can change the value it sees here."
+        "Loop variable capture. "
+        "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it."
     )
 
 
@@ -298,6 +306,32 @@ def test_reviewer_note_falls_back_to_issue_message_when_guidance_sections_are_em
     )
 
     assert note == "Use a clearer name."
+
+
+def test_reviewer_note_uses_duplicate_reference_for_repeated_guidance() -> None:
+    issue = SonarIssue(
+        key="issue-repeat",
+        rule="python:S3776",
+        severity="CRITICAL",
+        message="Refactor this function to reduce its Cognitive Complexity from 28 to the 15 allowed.",
+        location=IssueLocation(path="src/uploads.py", line=52),
+        issue_type="CODE_SMELL",
+    )
+
+    note = AnalysisService._reviewer_note(
+        issue,
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.DETAILED,
+                explanation="Check what behavior this code is preserving before you refactor it.",
+                next_step="Validate the code path against the expected behavior before changing it.",
+            ),
+            historical_context=None,
+        ),
+        duplicate_reference="src/uploads.py:31",
+    )
+
+    assert note == "Same as in [src/uploads.py:31]."
 
 
 def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:

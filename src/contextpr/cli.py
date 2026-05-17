@@ -7,11 +7,7 @@ import typer
 
 from contextpr import __version__
 from contextpr.config import Settings
-from contextpr.enrichment import (
-    IssueEnricher,
-    LLMVerbalizerSettings,
-    LightweightLLMGuidanceVerbalizer,
-)
+from contextpr.enrichment import IssueEnricher
 from contextpr.integrations.github import GitHubClient
 from contextpr.integrations.sonarqube import SonarQubeClient
 from contextpr.logging_config import configure_logging
@@ -90,19 +86,6 @@ def analyze(
         repository=settings.github_repository or "",
         number=pr_number,
     )
-    verbalizer = None
-    if settings.llm_enabled:
-        assert settings.llm_api_url is not None
-        assert settings.llm_api_key is not None
-        assert settings.llm_model is not None
-        verbalizer = LightweightLLMGuidanceVerbalizer(
-            LLMVerbalizerSettings(
-                api_url=settings.llm_api_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-                timeout_seconds=settings.llm_timeout_seconds,
-            )
-        )
     github_client = GitHubClient(settings)
     sonar_client = SonarQubeClient(settings)
     history_store = HistoryStore(settings.local_history_db_path) if settings.local_history_enabled else None
@@ -121,7 +104,6 @@ def analyze(
         sonar_client=sonar_client,
         issue_enricher=IssueEnricher(
             dataset_path=settings.issue_dataset_path,
-            guidance_verbalizer=verbalizer,
             enable_local_history=settings.local_history_enabled,
             enable_local_git_history=local_git_enabled,
             history_store=history_store,
