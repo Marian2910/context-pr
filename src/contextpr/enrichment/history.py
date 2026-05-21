@@ -879,7 +879,7 @@ class LocalSonarHistoryRetriever:
             return 0.0
         rule_score = LocalSonarHistoryRetriever._rule_similarity(issue, record)
         location_score = LocalSonarHistoryRetriever._location_similarity(issue, record)
-        if rule_score == 0.0 and location_score == 0.0:
+        if rule_score <= 0.0 and location_score <= 0.0:
             return 0.0
         score = (0.6 * rule_score) + (0.4 * location_score)
         return round(score, 4)

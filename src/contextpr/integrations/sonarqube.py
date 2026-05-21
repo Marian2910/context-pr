@@ -75,65 +75,132 @@ class SonarQubeClient:
         with store.acquire_repository_lock(repository_key):
             previous_state = store.get_sync_state(repository_key, LOCAL_SONAR_SYNC_SOURCE)
             previous_cursor = previous_state.cursor if previous_state is not None else None
+            counters = {
+                "pages_fetched": 0,
+                "issues_seen": 0,
+                "issues_upserted": 0,
+                "observations_recorded": 0,
+            }
             latest_update = previous_cursor
-            page_number = 1
-            pages_fetched = 0
-            issues_seen = 0
-            issues_upserted = 0
-            observations_recorded = 0
 
             for resolved_filter in ("false", "true"):
-                page_number = 1
-                while True:
-                    payload = self._execute_request(
-                        self._build_project_history_request(
-                            page_number,
-                            page_size,
-                            resolved=resolved_filter,
-                        )
-                    )
-                    pages_fetched += 1
-                    raw_issues = payload.get("issues", [])
-                    total = payload.get("total", 0)
-                    if not isinstance(raw_issues, list):
-                        break
-
-                    page_result = self._sync_project_history_page(
-                        store=store,
-                        repository_key=repository_key,
-                        raw_issues=raw_issues,
-                        previous_cursor=previous_cursor,
-                        latest_update=latest_update,
-                    )
-                    issues_seen += page_result.issues_seen
-                    issues_upserted += page_result.issues_upserted
-                    observations_recorded += page_result.observations_recorded
-                    latest_update = page_result.latest_update
-
-                    if latest_update is not None:
-                        store.upsert_sync_state(
-                            SyncStateRecord(
-                                repository_key=repository_key,
-                                source_name=LOCAL_SONAR_SYNC_SOURCE,
-                                cursor=latest_update,
-                                updated_at=latest_update,
-                            )
-                        )
-
-                    if page_result.should_stop:
-                        break
-                    if not isinstance(total, int) or page_number * page_size >= total:
-                        break
-                    page_number += 1
+                latest_update = self._sync_project_history_for_resolution_state(
+                    store=store,
+                    repository_key=repository_key,
+                    page_size=page_size,
+                    resolved_filter=resolved_filter,
+                    previous_cursor=previous_cursor,
+                    latest_update=latest_update,
+                    counters=counters,
+                )
 
             return SonarProjectHistorySyncResult(
                 repository_key=repository_key,
-                pages_fetched=pages_fetched,
-                issues_seen=issues_seen,
-                issues_upserted=issues_upserted,
-                observations_recorded=observations_recorded,
+                pages_fetched=counters["pages_fetched"],
+                issues_seen=counters["issues_seen"],
+                issues_upserted=counters["issues_upserted"],
+                observations_recorded=counters["observations_recorded"],
                 latest_update=latest_update,
             )
+
+    def _sync_project_history_for_resolution_state(
+        self,
+        *,
+        store: HistoryStore,
+        repository_key: str,
+        page_size: int,
+        resolved_filter: str,
+        previous_cursor: str | None,
+        latest_update: str | None,
+        counters: dict[str, int],
+    ) -> str | None:
+        page_number = 1
+        while True:
+            payload = self._execute_project_history_request(
+                page_number=page_number,
+                page_size=page_size,
+                resolved_filter=resolved_filter,
+            )
+            counters["pages_fetched"] += 1
+            raw_issues = payload.get("issues", [])
+            total = payload.get("total", 0)
+            if not isinstance(raw_issues, list):
+                return latest_update
+
+            page_result = self._sync_project_history_page(
+                store=store,
+                repository_key=repository_key,
+                raw_issues=raw_issues,
+                previous_cursor=previous_cursor,
+                latest_update=latest_update,
+            )
+            self._accumulate_page_result(counters, page_result)
+            latest_update = page_result.latest_update
+            self._persist_sync_state(store, repository_key, latest_update)
+
+            if self._should_stop_history_pagination(
+                page_result=page_result,
+                total=total,
+                page_number=page_number,
+                page_size=page_size,
+            ):
+                return latest_update
+            page_number += 1
+
+    def _execute_project_history_request(
+        self,
+        *,
+        page_number: int,
+        page_size: int,
+        resolved_filter: str,
+    ) -> Mapping[str, object]:
+        return self._execute_request(
+            self._build_project_history_request(
+                page_number,
+                page_size,
+                resolved=resolved_filter,
+            )
+        )
+
+    @staticmethod
+    def _accumulate_page_result(
+        counters: dict[str, int],
+        page_result: SonarProjectHistoryPageResult,
+    ) -> None:
+        counters["issues_seen"] += page_result.issues_seen
+        counters["issues_upserted"] += page_result.issues_upserted
+        counters["observations_recorded"] += page_result.observations_recorded
+
+    @staticmethod
+    def _should_stop_history_pagination(
+        *,
+        page_result: SonarProjectHistoryPageResult,
+        total: object,
+        page_number: int,
+        page_size: int,
+    ) -> bool:
+        if page_result.should_stop:
+            return True
+        if not isinstance(total, int):
+            return True
+        return page_number * page_size >= total
+
+    def _persist_sync_state(
+        self,
+        store: HistoryStore,
+        repository_key: str,
+        latest_update: str | None,
+    ) -> None:
+        if latest_update is None:
+            return
+        store.upsert_sync_state(
+            SyncStateRecord(
+                repository_key=repository_key,
+                source_name=LOCAL_SONAR_SYNC_SOURCE,
+                cursor=latest_update,
+                updated_at=latest_update,
+            )
+        )
 
     def _sync_project_history_page(
         self,

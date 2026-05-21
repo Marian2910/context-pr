@@ -307,51 +307,82 @@ class IssueEnricher:
         if context_signals.behavior_risk:
             return CommentIntent.INSPECT_BEFORE_CHANGING
 
-        if context_signals.self_explanatory and not context_signals.local_recurrence:
+        if self._should_skip_self_explanatory_comment(context_signals):
             return CommentIntent.NONE
 
-        if context_signals.local_recurrence and context_signals.persistence_high:
+        if self._should_defer_for_local_persistence(context_signals):
             return CommentIntent.DECIDE_BEFORE_DEFERRING
 
-        if context_signals.local_recurrence and (
+        if self._should_fix_now_from_local_recurrence(context_signals):
+            return CommentIntent.WORTH_FIXING_NOW
+
+        if self._should_mark_recurrence(context_signals):
+            return CommentIntent.RECURS_HERE
+
+        if self._should_fix_local_code_smell(issue, context_signals):
+            return CommentIntent.WORTH_FIXING_NOW
+
+        if self._should_defer_for_non_local_persistence(context_signals):
+            return CommentIntent.DECIDE_BEFORE_DEFERRING
+
+        if self._should_skip_non_local_recurrence(context_signals):
+            return CommentIntent.NONE
+
+        return CommentIntent.NONE
+
+    @staticmethod
+    def _should_skip_self_explanatory_comment(context_signals: ContextSignals) -> bool:
+        return context_signals.self_explanatory and not context_signals.local_recurrence
+
+    @staticmethod
+    def _should_defer_for_local_persistence(context_signals: ContextSignals) -> bool:
+        return context_signals.local_recurrence and context_signals.persistence_high
+
+    @staticmethod
+    def _should_fix_now_from_local_recurrence(context_signals: ContextSignals) -> bool:
+        return context_signals.local_recurrence and (
             context_signals.fix_tendency_high
             or context_signals.quick_fix_tendency_high
             or context_signals.small_effort
-        ):
-            return CommentIntent.WORTH_FIXING_NOW
+        )
 
-        if (
+    @staticmethod
+    def _should_mark_recurrence(context_signals: ContextSignals) -> bool:
+        return (
             not context_signals.self_explanatory
             and context_signals.local_recurrence
             and context_signals.strong_history
-        ):
-            return CommentIntent.RECURS_HERE
+        )
 
-        if (
+    @staticmethod
+    def _should_fix_local_code_smell(
+        issue: SonarIssue,
+        context_signals: ContextSignals,
+    ) -> bool:
+        return (
             issue.issue_type == "CODE_SMELL"
             and not context_signals.self_explanatory
             and context_signals.source_is_local
             and context_signals.fix_tendency_high
-        ):
-            return CommentIntent.WORTH_FIXING_NOW
+        )
 
-        if (
+    @staticmethod
+    def _should_defer_for_non_local_persistence(context_signals: ContextSignals) -> bool:
+        return (
             not context_signals.source_is_local
             and context_signals.strong_history
             and context_signals.persistence_high
             and not context_signals.self_explanatory
-        ):
-            return CommentIntent.DECIDE_BEFORE_DEFERRING
+        )
 
-        if (
+    @staticmethod
+    def _should_skip_non_local_recurrence(context_signals: ContextSignals) -> bool:
+        return (
             not context_signals.source_is_local
             and context_signals.strong_history
             and not context_signals.self_explanatory
             and (context_signals.same_file_recurrence or context_signals.same_module_recurrence)
-        ):
-            return CommentIntent.NONE
-
-        return CommentIntent.NONE
+        )
 
     def _issue_language_profile(
         self,
