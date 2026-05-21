@@ -39,6 +39,7 @@ class SonarIssue:
     tags: tuple[str, ...] = ()
     clean_code_attribute: str = ""
     clean_code_attribute_category: str = ""
+    effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

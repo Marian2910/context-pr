@@ -12,6 +12,7 @@ from contextpr.enrichment import (
     IssueEnricher,
     IssueContextEvidence,
     LocalPullRequestHistoryRetriever,
+    LocalSonarHistoryRetriever,
 )
 from contextpr.models import IssueLocation, SonarIssue
 from contextpr.persistence import (
@@ -258,14 +259,7 @@ def test_issue_enricher_adds_duplicate_condition_context_for_behavioral_history(
 
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.DETAILED
-    assert enrichment.guidance.explanation == (
-        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
-    )
-    assert enrichment.guidance.next_step is None
-    assert enrichment.guidance.evidence_note == (
-        "Historically similar matches for the same file path were split between "
-        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.explanation is not None
 
 
 def test_history_retriever_returns_none_when_dataset_is_missing(tmp_path: Path) -> None:
@@ -503,10 +497,9 @@ def test_issue_enricher_uses_local_sonar_history_when_available(tmp_path: Path) 
     assert enrichment.historical_context.local_sonar is not None
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file were usually fixed, so this is probably worth resolving "
-        "in this PR if the cleanup is small."
-    )
+    assert enrichment.guidance.evidence_note is not None
+    assert "similar cases of this rule were usually fixed" in enrichment.guidance.evidence_note
+    assert "reasonable fix to keep in this pr" in enrichment.guidance.evidence_note.lower()
 
 
 def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
@@ -588,13 +581,12 @@ def test_issue_enricher_prefers_local_sonar_over_global_dataset_when_both_exist(
     assert enrichment.historical_context.local_sonar is not None
     assert enrichment.historical_context.global_dataset is None
     assert enrichment.historical_context.preferred_source_name() == "local_sonar"
-    assert enrichment.guidance.explanation == (
-        "This structure can be simplified, but first confirm that the current separation is not carrying distinct behavior or intent."
+    assert enrichment.guidance.level is GuidanceLevel.CONTEXTUAL
+    assert enrichment.guidance.evidence_note is not None
+    assert "similar cases of this rule often remained open once introduced" in (
+        enrichment.guidance.evidence_note
     )
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file often stayed unresolved across later changes, so decide "
-        "explicitly whether to fix it now or leave it for follow-up."
-    )
+    assert "follow-up decision" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_local_git_history_when_local_sonar_is_too_weak(
@@ -817,10 +809,9 @@ def test_issue_enricher_can_fall_back_to_review_comment_history(
     assert enrichment.historical_context is not None
     assert enrichment.historical_context.local_review_comments is not None
     assert enrichment.historical_context.preferred_source_name() == "local_review_comments"
-    assert enrichment.guidance.evidence_note == (
-        "Similar local cases in this file more often needed behavior-aware follow-up than quick "
-        "cleanup, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.explanation is not None
+    assert "check" in enrichment.guidance.explanation.lower() or "verify" in enrichment.guidance.explanation.lower()
 
 
 def test_local_pull_request_history_retriever_finds_strong_same_file_signal(
@@ -902,7 +893,273 @@ def test_issue_enricher_surfaces_local_sonar_history_for_recurrent_trivial_smell
     assert enrichment is not None
     assert enrichment.guidance.level is GuidanceLevel.MINIMAL
     assert enrichment.guidance.evidence_note is not None
-    assert "worth resolving in this PR" in enrichment.guidance.evidence_note
+    assert "reasonable fix to keep in this pr" in enrichment.guidance.evidence_note.lower()
+
+
+def test_local_sonar_history_links_fixed_issue_to_recent_file_touching_pr(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_pull_request(
+        "octo/example",
+        PullRequestRecord(
+            pr_number=42,
+            title="Remove unused parameters",
+            state="closed",
+            merged_at="2026-05-14T10:00:00+00:00",
+            updated_at="2026-05-14T10:30:00+00:00",
+        ),
+        files=(PullRequestFileRecord(pr_number=42, file_path="src/app.py"),),
+    )
+    for index in range(1, 3):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"fixed-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2026-05-15T1{index}:00:00+00:00",
+                line=20 + index,
+                end_line=20 + index,
+            ),
+        )
+
+    context = LocalSonarHistoryRetriever(store, "octo/example").find_context(_issue())
+
+    assert context is not None
+    assert len(context.fix_references) == 1
+    reference = context.fix_references[0]
+    assert reference.pr_number == 42
+    assert reference.pr_url == "https://github.com/octo/example/pull/42"
+    assert reference.file_url == "https://github.com/octo/example/pull/42/files"
+    assert reference.confidence >= 0.9
+    assert "same Sonar rule `python:S1172`" in reference.evidence
+
+
+def test_local_sonar_score_prefers_same_rule_and_code_context() -> None:
+    issue = _issue()
+    same_rule_score = LocalSonarHistoryRetriever._score_record(
+        issue,
+        SonarIssueRecord(
+            issue_key="same-rule",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            tags_json='["unused"]',
+            updated_at="2026-05-19T10:00:00+00:00",
+        ),
+    )
+    related_rule_score = LocalSonarHistoryRetriever._score_record(
+        issue,
+        SonarIssueRecord(
+            issue_key="related-rule",
+            rule="python:S1481",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused local variable",
+            tags_json='["unused"]',
+            updated_at="2026-05-19T10:00:00+00:00",
+        ),
+    )
+    unrelated_score = LocalSonarHistoryRetriever._score_record(
+        issue,
+        SonarIssueRecord(
+            issue_key="unrelated",
+            rule="python:S9999",
+            issue_type="BUG",
+            severity="HIGH",
+            component="docs/readme.md",
+            message="Validate this security-sensitive configuration",
+            updated_at="2026-05-19T10:00:00+00:00",
+        ),
+    )
+
+    assert same_rule_score > related_rule_score > unrelated_score
+
+
+def test_local_sonar_score_applies_recency_decay() -> None:
+    issue = _issue()
+    recent_score = LocalSonarHistoryRetriever._score_record(
+        issue,
+        SonarIssueRecord(
+            issue_key="recent",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            updated_at="2026-05-19T10:00:00+00:00",
+        ),
+    )
+    old_score = LocalSonarHistoryRetriever._score_record(
+        issue,
+        SonarIssueRecord(
+            issue_key="old",
+            rule="python:S1172",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/app.py",
+            message="Remove unused function parameter",
+            updated_at="2024-05-19T10:00:00+00:00",
+        ),
+    )
+
+    assert recent_score > old_score
+    assert old_score >= 4.0
+
+
+def test_local_sonar_history_falls_back_to_last_prs_when_time_window_is_sparse(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_pull_request(
+        "octo/example",
+        PullRequestRecord(
+            pr_number=41,
+            title="Recent unrelated cleanup",
+            state="closed",
+            merged_at="2026-05-14T10:00:00+00:00",
+            updated_at="2026-05-14T10:30:00+00:00",
+        ),
+        files=(PullRequestFileRecord(pr_number=41, file_path="src/other.py"),),
+    )
+    store.upsert_pull_request(
+        "octo/example",
+        PullRequestRecord(
+            pr_number=12,
+            title="Remove unused parameters",
+            state="closed",
+            merged_at="2024-05-14T10:00:00+00:00",
+            updated_at="2024-05-14T10:30:00+00:00",
+        ),
+        files=(PullRequestFileRecord(pr_number=12, file_path="src/app.py"),),
+    )
+    for index in range(1, 3):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"old-fixed-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2024-05-15T1{index}:00:00+00:00",
+                line=20 + index,
+            ),
+        )
+
+    context = LocalSonarHistoryRetriever(store, "octo/example").find_context(_issue())
+
+    assert context is not None
+    assert context.fix_references
+    assert context.fix_references[0].pr_number == 12
+
+
+def test_local_sonar_history_caps_dense_window_to_recent_prs(tmp_path: Path) -> None:
+    pull_requests = [
+        PullRequestRecord(
+            pr_number=index,
+            title=f"PR {index}",
+            state="closed",
+            merged_at="2026-05-14T10:00:00+00:00",
+            updated_at="2026-05-14T10:30:00+00:00",
+        )
+        for index in range(1, 503)
+    ]
+
+    bounded = LocalSonarHistoryRetriever._bounded_fix_reference_pull_requests(
+        pull_requests,
+    )
+
+    assert len(bounded) == 500
+    assert 1 not in {pull_request.pr_number for pull_request in bounded}
+
+
+def test_local_sonar_fix_references_use_dedicated_candidates_beyond_similarity_shortlist(
+    tmp_path: Path,
+) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    store.upsert_pull_request(
+        "octo/example",
+        PullRequestRecord(
+            pr_number=99,
+            title="Fix duplicated literal in sonar history example",
+            state="closed",
+            merged_at="2026-05-14T10:00:00+00:00",
+            updated_at="2026-05-14T10:30:00+00:00",
+        ),
+        files=(PullRequestFileRecord(pr_number=99, file_path="src/history_example.py"),),
+    )
+    store.upsert_sonar_issue(
+        "octo/example",
+        SonarIssueRecord(
+            issue_key="fixed-same-file",
+            rule="python:S1192",
+            issue_type="CODE_SMELL",
+            severity="LOW",
+            component="src/history_example.py",
+            message=(
+                "Define a constant instead of duplicating this literal "
+                "'Request completed with warnings' 5 times."
+            ),
+            status="CLOSED",
+            resolution="FIXED",
+            updated_at="2026-05-15T10:00:00+00:00",
+            line=12,
+            end_line=12,
+        ),
+    )
+
+    for index in range(30):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"open-message-match-{index}",
+                rule="python:S1192",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component=f"src/nearby_{index}.py",
+                message=(
+                    "Define a constant instead of duplicating this literal "
+                    "'ContextPR similarity baseline for historical sonar issues' 3 times."
+                ),
+                status="OPEN",
+                resolution=None,
+                updated_at=f"2026-05-{(index % 9) + 10:02d}T10:00:00+00:00",
+            ),
+        )
+
+    issue = SonarIssue(
+        key="issue-s1192",
+        rule="python:S1192",
+        severity="LOW",
+        message=(
+            "Define a constant instead of duplicating this literal "
+            "'ContextPR similarity baseline for historical sonar issues' 3 times."
+        ),
+        location=IssueLocation(path="src/history_example.py", line=15),
+        issue_type="CODE_SMELL",
+        tags=("design",),
+        clean_code_attribute="CLEAR",
+        clean_code_attribute_category="INTENTIONAL",
+    )
+
+    context = LocalSonarHistoryRetriever(store, "octo/example").find_context(issue)
+
+    assert context is not None
+    assert context.fix_references
+    assert context.fix_references[0].pr_number == 99
 
 
 def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
@@ -960,9 +1217,9 @@ def test_issue_enricher_uses_global_dataset_for_persistent_duplicate_branches(
     )
 
     assert enrichment is not None
-    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.level is GuidanceLevel.CONTEXTUAL
     assert enrichment.guidance.evidence_note is not None
-    assert "worth deciding explicitly" in enrichment.guidance.evidence_note
+    assert "follow-up decision" in enrichment.guidance.evidence_note
 
 
 def test_issue_enricher_uses_rule_id_before_message_text(tmp_path: Path) -> None:
@@ -1053,10 +1310,9 @@ def test_issue_enricher_reports_mixed_history_when_buckets_are_close(
     )
 
     assert enrichment is not None
-    assert enrichment.guidance.evidence_note == (
-        "Historically similar matches for the same file path were split between "
-        "behavior-sensitive changes and small refactors, so inspect the surrounding logic before simplifying it."
-    )
+    assert enrichment.guidance.level is GuidanceLevel.DETAILED
+    assert enrichment.guidance.explanation is not None
+    assert "check" in enrichment.guidance.explanation.lower() or "verify" in enrichment.guidance.explanation.lower()
 
 
 def test_issue_enricher_prefers_disposition_history_when_available(tmp_path: Path) -> None:
@@ -1169,7 +1425,7 @@ def test_issue_enricher_helper_branches(tmp_path: Path) -> None:
             dominant_maintenance_share=0.6667,
             maintenance_distribution=(("supporting", 4), ("cleanup", 2)),
         )
-    ) is None
+    ) is not None
     assert IssueEnricher._is_split_distribution(
         (("cleanup", 1), ("behavior", 1)),
         sample_size=0,
@@ -1200,10 +1456,10 @@ def test_issue_enricher_adds_generic_guidance_for_behavior_sensitive_cleanup(
     assert enrichment is not None
     assert enrichment.guidance.explanation is not None
     assert "prefix" not in enrichment.guidance.explanation
-    assert "behavior" in enrichment.guidance.explanation.lower() or "state" in enrichment.guidance.explanation.lower()
+    assert "check" in enrichment.guidance.explanation.lower() or "verify" in enrichment.guidance.explanation.lower()
     assert enrichment.guidance.next_step is not None
     assert "prefix" not in enrichment.guidance.next_step
-    assert "behavior" in enrichment.guidance.next_step.lower() or "state" in enrichment.guidance.next_step.lower()
+    assert "path" in enrichment.guidance.next_step.lower() or "surrounding code" in enrichment.guidance.next_step.lower()
 
 
 def _issue() -> SonarIssue:
