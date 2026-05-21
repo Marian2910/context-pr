@@ -15,7 +15,6 @@ DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_LOCAL_HISTORY_DB_PATH = Path.home() / ".contextpr" / "history.db"
-DEFAULT_FIX_REFERENCE_DEBUG_LOG_PATH = Path(".contextpr") / "fix_reference_debug.log"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOCAL_HISTORY_ENABLED = False
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
@@ -39,7 +38,6 @@ class Settings:
     sonar_project_key: str | None = None
     issue_dataset_path: Path = DEFAULT_ISSUE_DATASET_PATH
     local_history_db_path: Path = DEFAULT_LOCAL_HISTORY_DB_PATH
-    fix_reference_debug_log_path: Path = DEFAULT_FIX_REFERENCE_DEBUG_LOG_PATH
     local_history_enabled: bool = DEFAULT_LOCAL_HISTORY_ENABLED
     log_level: str = DEFAULT_LOG_LEVEL
 
@@ -79,11 +77,6 @@ class Settings:
                 env,
                 "CONTEXTPR_LOCAL_HISTORY_DB_PATH",
                 default=DEFAULT_LOCAL_HISTORY_DB_PATH,
-            ),
-            fix_reference_debug_log_path=_read_path(
-                env,
-                "CONTEXTPR_FIX_REFERENCE_DEBUG_LOG_PATH",
-                default=DEFAULT_FIX_REFERENCE_DEBUG_LOG_PATH,
             ),
             local_history_enabled=_read_bool(
                 env,

@@ -126,25 +126,6 @@ Depending on the issue and the available history, comments may include:
 Rendered comments are intentionally split into short paragraphs to make the guidance easier to
 scan in GitHub reviews.
 
-## Debugging historical PR links
-
-When local history is enabled, ContextPR can also write fix-reference diagnostics to a log file.
-
-Default path:
-
-```bash
-.contextpr/fix_reference_debug.log
-```
-
-Override it with:
-
-```bash
-export CONTEXTPR_FIX_REFERENCE_DEBUG_LOG_PATH=/path/to/fix_reference_debug.log
-```
-
-This log is useful when a historical PR link does not appear and you need to check whether the
-candidate was not found, rejected, or dropped during message rendering.
-
 ## Using the GitHub Action
 
 This repository also includes a reusable Docker-based GitHub Action in [action.yml](action.yml).

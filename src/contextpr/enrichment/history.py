@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 from collections import Counter
 from collections.abc import Iterable
@@ -31,9 +30,6 @@ from contextpr.persistence import (
     PullRequestReviewCommentRecord,
     SonarIssueRecord,
 )
-
-fix_reference_debug_logger = logging.getLogger("contextpr.fix_reference_debug")
-
 
 @dataclass(frozen=True, slots=True)
 class HistoricalFixReference:
@@ -463,10 +459,6 @@ class LocalSonarHistoryRetriever:
     def find_context(self, issue: SonarIssue, *, top_k: int = 25) -> IssueContextEvidence | None:
         stored_issues = self._store.list_sonar_issues(self._repository_key)
         if not stored_issues:
-            self._debug_fix_reference(
-                "local_sonar.no_stored_issues",
-                issue=issue,
-            )
             return None
 
         scored: list[tuple[SonarIssueRecord, float]] = []
@@ -476,11 +468,6 @@ class LocalSonarHistoryRetriever:
                 scored.append((record, score))
 
         if not scored:
-            self._debug_fix_reference(
-                "local_sonar.no_scored_matches",
-                issue=issue,
-                total_records=len(stored_issues),
-            )
             return None
 
         scored.sort(
@@ -494,25 +481,7 @@ class LocalSonarHistoryRetriever:
         similar = [record for record, _score in scored[:top_k]]
         evidence = self._summarize_matches(issue, similar)
         if not self._has_strong_local_signal(evidence):
-            self._debug_fix_reference(
-                "local_sonar.weak_signal",
-                issue=issue,
-                sample_size=evidence.sample_size,
-                same_rule_matches=evidence.same_rule_matches,
-                same_exact_path_matches=evidence.same_exact_path_matches,
-                strong_match_count=evidence.strong_match_count,
-            )
             return None
-        self._debug_fix_reference(
-            "local_sonar.context_ready",
-            issue=issue,
-            sample_size=evidence.sample_size,
-            same_rule_matches=evidence.same_rule_matches,
-            same_exact_path_matches=evidence.same_exact_path_matches,
-            dominant_disposition=evidence.dominant_disposition,
-            resolved_share=evidence.resolved_share,
-            fix_reference_count=len(evidence.fix_references),
-        )
         return evidence
 
     def _summarize_matches(
@@ -778,10 +747,6 @@ class LocalSonarHistoryRetriever:
             if pull_request.merged_at is not None
         ])
         if not pull_requests:
-            self._debug_fix_reference(
-                "fix_references.no_merged_pull_requests",
-                issue=issue,
-            )
             return ()
 
         files_by_pr = {
@@ -792,26 +757,10 @@ class LocalSonarHistoryRetriever:
             for pull_request in pull_requests
         }
         candidate_records = self._fix_reference_candidate_records(issue, similar)
-        self._debug_fix_reference(
-            "fix_references.candidate_pool",
-            issue=issue,
-            pull_request_count=len(pull_requests),
-            candidate_count=len(candidate_records),
-            candidate_issue_keys=",".join(record.issue_key for record in candidate_records[:10]),
-        )
         references: list[HistoricalFixReference] = []
         seen_prs: set[int] = set()
         for record in candidate_records:
             if self._disposition_bucket(record) != "resolved":
-                self._debug_fix_reference(
-                    "fix_references.skip_unresolved_record",
-                    issue=issue,
-                    record_issue_key=record.issue_key,
-                    record_rule=record.rule,
-                    record_component=record.component,
-                    record_status=record.status,
-                    record_resolution=record.resolution,
-                )
                 continue
             reference = self._fix_reference_for_record(
                 issue,
@@ -826,14 +775,7 @@ class LocalSonarHistoryRetriever:
             if len(references) >= top_k:
                 break
 
-        result = tuple(references)
-        self._debug_fix_reference(
-            "fix_references.result",
-            issue=issue,
-            reference_count=len(result),
-            reference_prs=",".join(str(reference.pr_number) for reference in result),
-        )
-        return result
+        return tuple(references)
 
     def _fix_reference_candidate_records(
         self,
@@ -863,14 +805,6 @@ class LocalSonarHistoryRetriever:
             ),
             reverse=True,
         )
-        self._debug_fix_reference(
-            "fix_references.candidate_ranking",
-            issue=issue,
-            top_candidates=",".join(
-                f"{record.issue_key}:{score}"
-                for record, score in ranked[:10]
-            ),
-        )
         return [record for record, _score in ranked[:FIX_REFERENCE_RECORD_LIMIT]]
 
     @staticmethod
@@ -893,11 +827,6 @@ class LocalSonarHistoryRetriever:
     ) -> HistoricalFixReference | None:
         resolved_at = _parse_timestamp(record.updated_at)
         if resolved_at is None:
-            self._debug_fix_reference(
-                "fix_reference_record.missing_resolved_at",
-                issue=issue,
-                record_issue_key=record.issue_key,
-            )
             return None
 
         record_path = GlobalDatasetHistoryRetriever._component_path(record.component)
@@ -905,52 +834,18 @@ class LocalSonarHistoryRetriever:
         for pull_request in pull_requests:
             merged_at = _parse_timestamp(pull_request.merged_at)
             if merged_at is None or merged_at > resolved_at:
-                self._debug_fix_reference(
-                    "fix_reference_record.skip_pr_after_resolution",
-                    issue=issue,
-                    record_issue_key=record.issue_key,
-                    record_path=record_path,
-                    pr_number=pull_request.pr_number,
-                    pr_merged_at=pull_request.merged_at,
-                    resolved_at=record.updated_at,
-                )
                 continue
             age = resolved_at - merged_at
             if age < timedelta(0) or age > timedelta(days=MAX_FIX_ATTRIBUTION_DELAY_DAYS):
-                self._debug_fix_reference(
-                    "fix_reference_record.skip_pr_outside_window",
-                    issue=issue,
-                    record_issue_key=record.issue_key,
-                    record_path=record_path,
-                    pr_number=pull_request.pr_number,
-                    pr_merged_at=pull_request.merged_at,
-                    resolved_at=record.updated_at,
-                    age_days=round(age.total_seconds() / 86400, 4),
-                )
                 continue
             if not self._pull_request_touches_path(
                 files_by_pr.get(pull_request.pr_number, []),
                 record_path,
             ):
-                self._debug_fix_reference(
-                    "fix_reference_record.skip_pr_missing_file_touch",
-                    issue=issue,
-                    record_issue_key=record.issue_key,
-                    record_path=record_path,
-                    pr_number=pull_request.pr_number,
-                )
                 continue
             candidates.append((pull_request, int(age.total_seconds())))
 
         if not candidates:
-            self._debug_fix_reference(
-                "fix_reference_record.no_viable_pr_candidates",
-                issue=issue,
-                record_issue_key=record.issue_key,
-                record_rule=record.rule,
-                record_component=record.component,
-                resolved_at=record.updated_at,
-            )
             return None
 
         candidates.sort(key=lambda item: (item[1], -item[0].pr_number))
@@ -958,13 +853,6 @@ class LocalSonarHistoryRetriever:
         files = files_by_pr.get(pull_request.pr_number, [])
         confidence = self._fix_reference_confidence(issue, record, files)
         if confidence < 0.7:
-            self._debug_fix_reference(
-                "fix_reference_record.reject_low_confidence",
-                issue=issue,
-                record_issue_key=record.issue_key,
-                pr_number=pull_request.pr_number,
-                confidence=confidence,
-            )
             return None
 
         reference = HistoricalFixReference(
@@ -976,14 +864,6 @@ class LocalSonarHistoryRetriever:
             resolved_at=record.updated_at or "",
             confidence=confidence,
             evidence=self._fix_reference_evidence(issue, record, files),
-        )
-        self._debug_fix_reference(
-            "fix_reference_record.accepted",
-            issue=issue,
-            record_issue_key=record.issue_key,
-            pr_number=reference.pr_number,
-            confidence=reference.confidence,
-            evidence=" | ".join(reference.evidence),
         )
         return reference
 
@@ -1086,25 +966,6 @@ class LocalSonarHistoryRetriever:
 
     def _pull_request_url(self, pr_number: int) -> str:
         return f"https://github.com/{self._repository_key}/pull/{pr_number}"
-
-    def _debug_fix_reference(
-        self,
-        event: str,
-        *,
-        issue: SonarIssue,
-        **extra: object,
-    ) -> None:
-        fix_reference_debug_logger.debug(
-            event,
-            extra={
-                "repository": self._repository_key,
-                "issue_key": issue.key,
-                "issue_rule": issue.rule,
-                "issue_path": issue.location.path,
-                "issue_line": issue.location.line,
-                **extra,
-            },
-        )
 
 
 class LocalGitHistoryRetriever:

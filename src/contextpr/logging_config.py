@@ -4,7 +4,6 @@ import json
 import logging
 from datetime import UTC, datetime
 from logging.config import dictConfig
-from pathlib import Path
 
 _RESERVED_LOG_RECORD_FIELDS = {
     "args",
@@ -64,7 +63,7 @@ class KeyValueFormatter(logging.Formatter):
         return json.dumps(str(value), ensure_ascii=True)
 
 
-def configure_logging(level: str = "INFO", *, fix_reference_debug_log_path: Path | None = None) -> None:
+def configure_logging(level: str = "INFO") -> None:
     handlers: dict[str, dict[str, object]] = {
         "console": {
             "class": "logging.StreamHandler",
@@ -72,23 +71,6 @@ def configure_logging(level: str = "INFO", *, fix_reference_debug_log_path: Path
             "level": level.upper(),
         }
     }
-    loggers: dict[str, dict[str, object]] = {}
-
-    if fix_reference_debug_log_path is not None:
-        fix_reference_debug_log_path.parent.mkdir(parents=True, exist_ok=True)
-        handlers["fix_reference_debug_file"] = {
-            "class": "logging.FileHandler",
-            "formatter": "contextpr",
-            "filename": str(fix_reference_debug_log_path),
-            "mode": "w",
-            "level": "DEBUG",
-            "encoding": "utf-8",
-        }
-        loggers["contextpr.fix_reference_debug"] = {
-            "handlers": ["fix_reference_debug_file"],
-            "level": "DEBUG",
-            "propagate": False,
-        }
 
     dictConfig(
         {
@@ -100,7 +82,6 @@ def configure_logging(level: str = "INFO", *, fix_reference_debug_log_path: Path
                 }
             },
             "handlers": handlers,
-            "loggers": loggers,
             "root": {
                 "handlers": ["console"],
                 "level": level.upper(),

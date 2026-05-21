@@ -66,10 +66,7 @@ def analyze(
     ] = True,
 ) -> None:
     settings = Settings.from_env()
-    configure_logging(
-        settings.log_level,
-        fix_reference_debug_log_path=settings.fix_reference_debug_log_path,
-    )
+    configure_logging(settings.log_level)
     if settings.github_auth_mode == "none":
         raise typer.BadParameter(
             "GitHub authentication is required. Configure CONTEXTPR_GITHUB_TOKEN "
@@ -135,10 +132,7 @@ def run() -> None:
 @app.command("sync-history")
 def sync_history() -> None:
     settings = Settings.from_env()
-    configure_logging(
-        settings.log_level,
-        fix_reference_debug_log_path=settings.fix_reference_debug_log_path,
-    )
+    configure_logging(settings.log_level)
     if not settings.local_history_enabled:
         raise typer.BadParameter(
             "Local history sync requires CONTEXTPR_ENABLE_LOCAL_HISTORY=true."

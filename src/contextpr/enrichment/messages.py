@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from contextpr.enrichment.history import HistoricalContext
 from contextpr.models import SonarIssue
 
@@ -31,9 +29,6 @@ NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
         "Verify the flagged code path before rewriting it.",
     ),
 }
-
-fix_reference_debug_logger = logging.getLogger("contextpr.fix_reference_debug")
-
 
 class DeterministicGuidanceMessageService:
     def build_explanation(
@@ -218,28 +213,9 @@ class DeterministicGuidanceMessageService:
     @staticmethod
     def _fix_reference_note(historical_context: HistoricalContext) -> str:
         if not historical_context.fix_references:
-            fix_reference_debug_logger.debug(
-                "messages.fix_reference_note_absent",
-                extra={
-                    "sample_size": historical_context.sample_size,
-                    "same_rule_matches": historical_context.same_rule_matches,
-                    "same_exact_path_matches": historical_context.same_exact_path_matches,
-                    "dominant_disposition": historical_context.dominant_disposition,
-                    "resolved_share": historical_context.resolved_share,
-                },
-            )
             return ""
 
         reference = historical_context.fix_references[0]
-        fix_reference_debug_logger.debug(
-            "messages.fix_reference_note_present",
-            extra={
-                "pr_number": reference.pr_number,
-                "file_path": reference.file_path,
-                "confidence": reference.confidence,
-                "resolved_at": reference.resolved_at,
-            },
-        )
         link = f"[PR #{reference.pr_number}]({reference.pr_url})"
         file_hint = (
             f" See the changed files for `{reference.file_path}`: {reference.file_url}."
