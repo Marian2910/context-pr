@@ -120,13 +120,6 @@ ContextPR can also attach a historical PR reference. That path is intentionally 
 generic similarity notes: it requires merged PR evidence and touched-file support before a link is
 shown in the final GitHub comment.
 
-## Machine learning status
-
-The repository still contains experimental ML training and inference utilities, but the current
-production enrichment path does not load or call the intent classifier. Deployed comments are
-currently deterministic, explainable, and easier to validate. The ML components can still be
-evaluated later as a research extension if they prove useful.
-
 ## Reusable action packaging
 
 The repository is set up so the Python package remains the source of truth and the GitHub
@@ -147,7 +140,6 @@ The implementation leaves room for:
 - richer domain models for findings and comments
 - additional rule mappings and language-specific pattern tables
 - retrieval evaluation and stronger historical ranking
-- optional ML intent classification after offline validation
 - prompt templates or LLM-assisted rewriting behind strict grounding and abstention
 - SonarCloud and self-hosted SonarQube compatibility
 
