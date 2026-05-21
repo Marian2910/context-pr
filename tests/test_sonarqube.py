@@ -120,7 +120,7 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
             return json.dumps(self._payload).encode("utf-8")
 
     payloads = {
-        "1": {
+        ("false", "1"): {
             "total": 2,
             "issues": [
                 {
@@ -136,6 +136,11 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
                     "updateDate": "2026-05-16T11:00:00+0000",
                     "textRange": {"startLine": 10, "endLine": 10},
                 },
+            ],
+        },
+        ("true", "1"): {
+            "total": 1,
+            "issues": [
                 {
                     "key": "issue-2",
                     "rule": "python:S1481",
@@ -150,14 +155,16 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
                     "textRange": {"startLine": 20, "endLine": 20},
                 },
             ],
-        }
+        },
     }
 
     def fake_urlopen(request: object, **_kwargs: object) -> FakeResponse:
         full_url = getattr(request, "full_url")
-        page = parse_qs(urlparse(full_url).query)["p"][0]
-        requested_pages.append(page)
-        return FakeResponse(payloads[page])
+        query = parse_qs(urlparse(full_url).query)
+        page = query["p"][0]
+        resolved = query["resolved"][0]
+        requested_pages.append(f"{resolved}:{page}")
+        return FakeResponse(payloads[(resolved, page)])
 
     monkeypatch.setattr("contextpr.integrations.sonarqube.urlopen", fake_urlopen)
 
@@ -167,7 +174,7 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
     )
 
     assert isinstance(result, SonarProjectHistorySyncResult)
-    assert requested_pages == ["1"]
+    assert requested_pages == ["false:1", "true:1"]
     assert result.issues_upserted == 2
     assert result.observations_recorded == 2
     assert result.latest_update == "2026-05-16T11:00:00+0000"
@@ -175,6 +182,9 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
         "issue-1",
         "issue-2",
     ]
+    stored_issue = store.list_sonar_issues("octo/example")[0]
+    assert stored_issue.line == 10
+    assert stored_issue.end_line == 10
     checkpoint = store.get_sync_state("octo/example", LOCAL_SONAR_SYNC_SOURCE)
     assert checkpoint is not None
     assert checkpoint.cursor == "2026-05-16T11:00:00+0000"
@@ -216,7 +226,11 @@ def test_sync_project_issue_history_stops_when_it_reaches_existing_checkpoint(
 
     def fake_urlopen(request: object, **_kwargs: object) -> FakeResponse:
         full_url = getattr(request, "full_url")
-        requested_pages.append(parse_qs(urlparse(full_url).query)["p"][0])
+        query = parse_qs(urlparse(full_url).query)
+        resolved = query["resolved"][0]
+        requested_pages.append(f"{resolved}:{query['p'][0]}")
+        if resolved == "true":
+            return FakeResponse({"total": 0, "issues": []})
         return FakeResponse(
             {
                 "total": 2,
@@ -254,7 +268,7 @@ def test_sync_project_issue_history_stops_when_it_reaches_existing_checkpoint(
         repository_key="octo/example",
     )
 
-    assert requested_pages == ["1"]
+    assert requested_pages == ["false:1", "true:1"]
     assert result.issues_upserted == 1
     assert [issue.issue_key for issue in store.list_sonar_issues("octo/example")] == ["issue-new"]
     checkpoint = store.get_sync_state("octo/example", LOCAL_SONAR_SYNC_SOURCE)

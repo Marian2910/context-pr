@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from contextpr.enrichment.history import HistoricalContext
 from contextpr.models import SonarIssue
 
@@ -14,21 +16,23 @@ LOCAL_HISTORY_SOURCES = {
 
 EXPLANATION_OPTIONS: dict[str, VariantOptions] = {
     "inspect_before_changing": (
-        "This is worth checking before simplifying, because the current structure may be preserving behavior or state.",
-        "Before simplifying this, check whether the current structure is preserving an intended behavior.",
-        "This looks like a cleanup candidate, but the surrounding behavior should be confirmed first.",
-        "Before rewriting this part, verify what behavior or state the current code is preserving.",
+        "This is worth checking before simplifying.",
+        "Check this before simplifying it.",
+        "This needs a quick check before you simplify it.",
+        "Before changing this, verify the current code path.",
     ),
 }
 
 NEXT_STEP_OPTIONS: dict[str, VariantOptions] = {
     "inspect_before_changing": (
-        "Validate the affected path against the expected outcome before editing it.",
-        "Check the affected path against the expected behavior before making the simplification.",
-        "Review the surrounding path and make sure the current outcome is still covered before changing it.",
-        "Verify the current outcome on this path before you rewrite the flagged code.",
+        "Verify the current code path before changing it.",
+        "Check the affected path before making this simplification.",
+        "Review the surrounding code before changing it.",
+        "Verify the flagged code path before rewriting it.",
     ),
 }
+
+fix_reference_debug_logger = logging.getLogger("contextpr.fix_reference_debug")
 
 
 class DeterministicGuidanceMessageService:
@@ -74,7 +78,7 @@ class DeterministicGuidanceMessageService:
         if issue_pattern == "general_review" and historical_context is not None:
             _ = context_signals, history_source
             return (
-                "If the fix is local to this change, address it in this PR; "
+                "If the fix is local to the current change, address it in this PR; "
                 "otherwise make the follow-up decision explicit."
             )
         return None
@@ -150,16 +154,16 @@ class DeterministicGuidanceMessageService:
         if focus == "later_refactor":
             return (
                 f"{self._history_subject(historical_context, history_source)}, "
-                "similar cases of this rule were often fixed as small cleanup work. "
-                "Since this issue is new in the PR, it is worth fixing here if the change stays local."
+                "similar cases of this rule were often fixed as small cleanup work.\n\n"
+                "Since this issue is new in the PR, it is worth fixing here."
             )
         if focus == "accumulating_hotspot":
             return self._recurrence_note(historical_context, history_source)
         if focus == "behavior_sensitive":
             return (
                 f"{self._history_subject(historical_context, history_source)}, "
-                "similar cases for this rule were split between cleanup and behavior-preserving edits. "
-                "Check the intended behavior before simplifying this code."
+                "similar cases for this rule were split between cleanup and behavior-preserving edits.\n\n"
+                "Check the current code path before simplifying this."
             )
         return None
 
@@ -170,22 +174,21 @@ class DeterministicGuidanceMessageService:
         historical_context: HistoricalContext,
         history_source: str | None,
     ) -> str:
+        _ = issue, context_signals
         subject = self._history_subject(historical_context, history_source)
+        fix_reference_note = self._fix_reference_note(historical_context)
         if historical_context.quick_fix_share >= 0.5:
-            tendency = "similar cases of this rule were often fixed quickly"
+            tendency = "similar cases of this rule were usually fixed quickly"
         elif historical_context.resolved_share >= 0.6:
-            tendency = "similar cases of this rule were often fixed rather than left open"
+            tendency = "similar cases of this rule were usually fixed"
         else:
             tendency = "this rule has been handled repeatedly in nearby code"
 
-        effort_clause = ""
-        if getattr(context_signals, "small_effort", False) and issue.effort:
-            effort_clause = f" Sonar estimates about {issue.effort} to address it."
-
         return (
-            f"{subject}, {tendency}.{effort_clause} "
-            "Since this issue is new in the PR, it is worth fixing here if the change stays local."
-        ).replace("..", ".")
+            f"{subject}, {tendency}.\n\n"
+            "This looks like a reasonable fix to keep in this PR."
+            f"{fix_reference_note}"
+        )
 
     def _defer_decision_note(
         self,
@@ -193,9 +196,11 @@ class DeterministicGuidanceMessageService:
         history_source: str | None,
     ) -> str:
         subject = self._history_subject(historical_context, history_source)
+        fix_reference_note = self._fix_reference_note(historical_context)
         return (
-            f"{subject}, similar cases of this rule often remained open once introduced. "
+            f"{subject}, similar cases of this rule often remained open once introduced.\n\n"
             "Since this issue is new in the PR, fix it now if possible; otherwise leave an explicit follow-up decision."
+            f"{fix_reference_note}"
         )
 
     def _recurrence_note(
@@ -206,8 +211,45 @@ class DeterministicGuidanceMessageService:
         subject = self._history_subject(historical_context, history_source)
         area = self._location_label(historical_context, history_source)
         return (
-            f"{subject}, this rule has appeared repeatedly in {area}. "
+            f"{subject}, this rule has appeared repeatedly in {area}.\n\n"
             "Since this PR touches the surrounding code, avoid adding another instance of the same maintainability pattern."
+        )
+
+    @staticmethod
+    def _fix_reference_note(historical_context: HistoricalContext) -> str:
+        if not historical_context.fix_references:
+            fix_reference_debug_logger.debug(
+                "messages.fix_reference_note_absent",
+                extra={
+                    "sample_size": historical_context.sample_size,
+                    "same_rule_matches": historical_context.same_rule_matches,
+                    "same_exact_path_matches": historical_context.same_exact_path_matches,
+                    "dominant_disposition": historical_context.dominant_disposition,
+                    "resolved_share": historical_context.resolved_share,
+                },
+            )
+            return ""
+
+        reference = historical_context.fix_references[0]
+        fix_reference_debug_logger.debug(
+            "messages.fix_reference_note_present",
+            extra={
+                "pr_number": reference.pr_number,
+                "file_path": reference.file_path,
+                "confidence": reference.confidence,
+                "resolved_at": reference.resolved_at,
+            },
+        )
+        link = f"[PR #{reference.pr_number}]({reference.pr_url})"
+        file_hint = (
+            f" See the changed files for `{reference.file_path}`: {reference.file_url}."
+            if reference.file_url is not None
+            else ""
+        )
+        return (
+            f"\n\nA similar fixed case is linked to {link}, with "
+            f"{round(reference.confidence * 100)}% confidence from Sonar resolution history "
+            f"and PR file evidence.{file_hint}"
         )
 
     def _history_subject(

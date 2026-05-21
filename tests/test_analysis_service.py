@@ -244,11 +244,11 @@ def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
     )
 
     assert minimal_note == (
-        'Remove the unused local variable "name". '
+        'Remove the unused local variable "name".\n\n'
         "Historically similar cases usually disappeared during later small refactors."
     )
     assert single_sentence_note == (
-        "Loop variable capture. "
+        "Loop variable capture.\n\n"
         "Treat this as behavior-sensitive cleanup and keep the current outcome intact while simplifying it."
     )
 
@@ -278,7 +278,7 @@ def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
     )
 
     assert note == (
-        "Loop variable capture. "
+        "Loop variable capture.\n\n"
         "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it."
     )
 

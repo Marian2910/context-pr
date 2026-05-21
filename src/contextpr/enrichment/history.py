@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +32,20 @@ from contextpr.persistence import (
     SonarIssueRecord,
 )
 
+fix_reference_debug_logger = logging.getLogger("contextpr.fix_reference_debug")
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalFixReference:
+    pr_number: int
+    pr_title: str
+    pr_url: str
+    file_url: str | None
+    file_path: str
+    resolved_at: str
+    confidence: float
+    evidence: tuple[str, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class IssueContextEvidence:
@@ -54,6 +70,7 @@ class IssueContextEvidence:
     persistent_share: float = 0.0
     quick_fix_share: float = 0.0
     median_resolution_days: float | None = None
+    fix_references: tuple[HistoricalFixReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +83,17 @@ class CombinedHistoricalContext:
 
     def preferred_evidence(self) -> IssueContextEvidence | None:
         source = self.preferred_source_name()
-        if source is None:
-            return None
-        return getattr(self, source)
+        if source == "local_sonar":
+            return self.local_sonar
+        if source == "local_git":
+            return self.local_git
+        if source == "local_prs":
+            return self.local_prs
+        if source == "local_review_comments":
+            return self.local_review_comments
+        if source == "global_dataset":
+            return self.global_dataset
+        return None
 
     def preferred_source_name(self) -> str | None:
         for evidence in (
@@ -85,6 +110,15 @@ class CombinedHistoricalContext:
 
 
 HistoricalContext = IssueContextEvidence
+FIX_REFERENCE_LOOKBACK_DAYS = 365
+FIX_REFERENCE_PR_LIMIT = 500
+MIN_FIX_REFERENCE_WINDOW_PRS = 3
+MAX_FIX_ATTRIBUTION_DELAY_DAYS = 14
+RECENCY_DECAY_TAU_DAYS = 180.0
+RECENCY_DECAY_FLOOR = 0.35
+LOCAL_SONAR_SCORE_SCALE = 20.0
+FIX_REFERENCE_RECORD_LIMIT = 100
+MIN_FIX_REFERENCE_RECORD_SCORE = 0.6
 
 
 class GlobalDatasetHistoryRetriever:
@@ -209,7 +243,9 @@ class GlobalDatasetHistoryRetriever:
         )
 
     @staticmethod
-    def _distribution(values: list[str] | tuple[str, ...] | pd.Series | object) -> tuple[tuple[str, int], ...]:
+    def _distribution(
+        values: Iterable[object],
+    ) -> tuple[tuple[str, int], ...]:
         counts = Counter(str(value) for value in values if str(value))
         return tuple(counts.most_common())
 
@@ -427,6 +463,10 @@ class LocalSonarHistoryRetriever:
     def find_context(self, issue: SonarIssue, *, top_k: int = 25) -> IssueContextEvidence | None:
         stored_issues = self._store.list_sonar_issues(self._repository_key)
         if not stored_issues:
+            self._debug_fix_reference(
+                "local_sonar.no_stored_issues",
+                issue=issue,
+            )
             return None
 
         scored: list[tuple[SonarIssueRecord, float]] = []
@@ -436,6 +476,11 @@ class LocalSonarHistoryRetriever:
                 scored.append((record, score))
 
         if not scored:
+            self._debug_fix_reference(
+                "local_sonar.no_scored_matches",
+                issue=issue,
+                total_records=len(stored_issues),
+            )
             return None
 
         scored.sort(
@@ -449,7 +494,25 @@ class LocalSonarHistoryRetriever:
         similar = [record for record, _score in scored[:top_k]]
         evidence = self._summarize_matches(issue, similar)
         if not self._has_strong_local_signal(evidence):
+            self._debug_fix_reference(
+                "local_sonar.weak_signal",
+                issue=issue,
+                sample_size=evidence.sample_size,
+                same_rule_matches=evidence.same_rule_matches,
+                same_exact_path_matches=evidence.same_exact_path_matches,
+                strong_match_count=evidence.strong_match_count,
+            )
             return None
+        self._debug_fix_reference(
+            "local_sonar.context_ready",
+            issue=issue,
+            sample_size=evidence.sample_size,
+            same_rule_matches=evidence.same_rule_matches,
+            same_exact_path_matches=evidence.same_exact_path_matches,
+            dominant_disposition=evidence.dominant_disposition,
+            resolved_share=evidence.resolved_share,
+            fix_reference_count=len(evidence.fix_references),
+        )
         return evidence
 
     def _summarize_matches(
@@ -541,6 +604,7 @@ class LocalSonarHistoryRetriever:
             ),
             quick_fix_share=quick_fix_share,
             median_resolution_days=self._median_resolution_days(resolution_days),
+            fix_references=self._fix_references(issue, similar),
         )
 
     @staticmethod
@@ -558,44 +622,102 @@ class LocalSonarHistoryRetriever:
 
     @staticmethod
     def _score_record(issue: SonarIssue, record: SonarIssueRecord) -> float:
-        score = 0.0
+        base_similarity = (
+            0.45 * LocalSonarHistoryRetriever._rule_similarity(issue, record)
+            + 0.35 * LocalSonarHistoryRetriever._code_similarity(issue, record)
+            + 0.20 * LocalSonarHistoryRetriever._location_similarity(issue, record)
+        )
+        recency_decay = LocalSonarHistoryRetriever._recency_decay(record)
+        score = base_similarity * recency_decay * LOCAL_SONAR_SCORE_SCALE
+        score += LocalSonarHistoryRetriever._utility_score(record)
+        return round(score, 4)
+
+    @staticmethod
+    def _rule_similarity(issue: SonarIssue, record: SonarIssueRecord) -> float:
+        if record.rule == issue.rule:
+            return 1.0
+        issue_tags = set(issue.tags)
+        record_tags = LocalSonarHistoryRetriever._record_tags(record)
+        if issue_tags and issue_tags & record_tags:
+            return 0.7
+        if (
+            record.clean_code_attribute_category
+            and record.clean_code_attribute_category == issue.clean_code_attribute_category
+        ):
+            return 0.7
+        if record.clean_code_attribute and record.clean_code_attribute == issue.clean_code_attribute:
+            return 0.6
+        if record.issue_type == issue.issue_type and issue.issue_type:
+            return 0.4
+        return 0.0
+
+    @staticmethod
+    def _code_similarity(issue: SonarIssue, record: SonarIssueRecord) -> float:
+        message_similarity = GlobalDatasetHistoryRetriever._message_overlap(
+            issue.message,
+            record.message,
+        )
+        metadata_similarity = 0.0
+        if record.issue_type == issue.issue_type and issue.issue_type:
+            metadata_similarity += 0.4
+        if record.severity == issue.severity and issue.severity:
+            metadata_similarity += 0.2
+        if set(issue.tags) & LocalSonarHistoryRetriever._record_tags(record):
+            metadata_similarity += 0.2
+        if (
+            record.clean_code_attribute
+            and record.clean_code_attribute == issue.clean_code_attribute
+        ):
+            metadata_similarity += 0.1
+        if (
+            record.clean_code_attribute_category
+            and record.clean_code_attribute_category == issue.clean_code_attribute_category
+        ):
+            metadata_similarity += 0.1
+        metadata_similarity = min(metadata_similarity, 1.0)
+        return round((0.7 * message_similarity) + (0.3 * metadata_similarity), 4)
+
+    @staticmethod
+    def _location_similarity(issue: SonarIssue, record: SonarIssueRecord) -> float:
         record_path = GlobalDatasetHistoryRetriever._component_path(record.component)
         issue_path = issue.location.path
-
-        if record.rule == issue.rule:
-            score += 7.0
         if record_path == issue_path and issue_path:
-            score += 3.5
-        if record.issue_type == issue.issue_type and issue.issue_type:
-            score += 2.5
-        if record.severity == issue.severity and issue.severity:
-            score += 1.5
-
-        record_tags = set()
-        if record.tags_json:
-            try:
-                raw_tags = json.loads(record.tags_json)
-            except json.JSONDecodeError:
-                raw_tags = []
-            if isinstance(raw_tags, list):
-                record_tags = {str(tag) for tag in raw_tags if isinstance(tag, str)}
-        score += float(len(set(issue.tags) & record_tags))
-
-        if (
-            GlobalDatasetHistoryRetriever._path_scope(record_path)
-            == GlobalDatasetHistoryRetriever._path_scope(issue_path)
-        ):
-            score += 1.5
+            return 1.0
         if (
             GlobalDatasetHistoryRetriever._path_family(record_path)
             == GlobalDatasetHistoryRetriever._path_family(issue_path)
         ):
-            score += 2.5
+            return 0.7
+        if (
+            GlobalDatasetHistoryRetriever._path_scope(record_path)
+            == GlobalDatasetHistoryRetriever._path_scope(issue_path)
+        ):
+            return 0.4
+        return 0.2 * GlobalDatasetHistoryRetriever._token_overlap(issue_path, record_path)
 
-        score += 3.0 * GlobalDatasetHistoryRetriever._token_overlap(issue_path, record_path)
-        score += 4.0 * GlobalDatasetHistoryRetriever._message_overlap(issue.message, record.message)
-        score += LocalSonarHistoryRetriever._utility_score(record)
-        return score
+    @staticmethod
+    def _recency_decay(record: SonarIssueRecord) -> float:
+        observed_at = _parse_timestamp(record.updated_at) or _parse_timestamp(record.created_at)
+        if observed_at is None:
+            return 1.0
+        now = datetime.now(tz=UTC)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=UTC)
+        age_days = max(0.0, (now - observed_at.astimezone(UTC)).total_seconds() / 86400)
+        decay = math.exp(-age_days / RECENCY_DECAY_TAU_DAYS)
+        return round(max(RECENCY_DECAY_FLOOR, decay), 4)
+
+    @staticmethod
+    def _record_tags(record: SonarIssueRecord) -> set[str]:
+        if not record.tags_json:
+            return set()
+        try:
+            raw_tags = json.loads(record.tags_json)
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(raw_tags, list):
+            return set()
+        return {str(tag) for tag in raw_tags if isinstance(tag, str)}
 
     @staticmethod
     def _utility_score(record: SonarIssueRecord) -> float:
@@ -642,6 +764,347 @@ class LocalSonarHistoryRetriever:
         if len(sorted_values) % 2 == 1:
             return sorted_values[middle]
         return round((sorted_values[middle - 1] + sorted_values[middle]) / 2, 2)
+
+    def _fix_references(
+        self,
+        issue: SonarIssue,
+        similar: list[SonarIssueRecord],
+        *,
+        top_k: int = 3,
+    ) -> tuple[HistoricalFixReference, ...]:
+        pull_requests = self._bounded_fix_reference_pull_requests([
+            pull_request
+            for pull_request in self._store.list_pull_requests(self._repository_key)
+            if pull_request.merged_at is not None
+        ])
+        if not pull_requests:
+            self._debug_fix_reference(
+                "fix_references.no_merged_pull_requests",
+                issue=issue,
+            )
+            return ()
+
+        files_by_pr = {
+            pull_request.pr_number: self._store.list_pull_request_files(
+                self._repository_key,
+                pull_request.pr_number,
+            )
+            for pull_request in pull_requests
+        }
+        candidate_records = self._fix_reference_candidate_records(issue, similar)
+        self._debug_fix_reference(
+            "fix_references.candidate_pool",
+            issue=issue,
+            pull_request_count=len(pull_requests),
+            candidate_count=len(candidate_records),
+            candidate_issue_keys=",".join(record.issue_key for record in candidate_records[:10]),
+        )
+        references: list[HistoricalFixReference] = []
+        seen_prs: set[int] = set()
+        for record in candidate_records:
+            if self._disposition_bucket(record) != "resolved":
+                self._debug_fix_reference(
+                    "fix_references.skip_unresolved_record",
+                    issue=issue,
+                    record_issue_key=record.issue_key,
+                    record_rule=record.rule,
+                    record_component=record.component,
+                    record_status=record.status,
+                    record_resolution=record.resolution,
+                )
+                continue
+            reference = self._fix_reference_for_record(
+                issue,
+                record,
+                pull_requests,
+                files_by_pr,
+            )
+            if reference is None or reference.pr_number in seen_prs:
+                continue
+            references.append(reference)
+            seen_prs.add(reference.pr_number)
+            if len(references) >= top_k:
+                break
+
+        result = tuple(references)
+        self._debug_fix_reference(
+            "fix_references.result",
+            issue=issue,
+            reference_count=len(result),
+            reference_prs=",".join(str(reference.pr_number) for reference in result),
+        )
+        return result
+
+    def _fix_reference_candidate_records(
+        self,
+        issue: SonarIssue,
+        similar: list[SonarIssueRecord],
+    ) -> list[SonarIssueRecord]:
+        candidates: dict[str, tuple[SonarIssueRecord, float]] = {}
+
+        for record in similar:
+            candidates[record.issue_key] = (record, 1.0)
+
+        for record in self._store.list_sonar_issues(self._repository_key):
+            score = self._fix_reference_record_score(issue, record)
+            if score < MIN_FIX_REFERENCE_RECORD_SCORE:
+                continue
+            existing = candidates.get(record.issue_key)
+            if existing is None or score > existing[1]:
+                candidates[record.issue_key] = (record, score)
+
+        ranked = sorted(
+            candidates.values(),
+            key=lambda item: (
+                item[1],
+                item[0].updated_at or "",
+                item[0].created_at or "",
+                item[0].issue_key,
+            ),
+            reverse=True,
+        )
+        self._debug_fix_reference(
+            "fix_references.candidate_ranking",
+            issue=issue,
+            top_candidates=",".join(
+                f"{record.issue_key}:{score}"
+                for record, score in ranked[:10]
+            ),
+        )
+        return [record for record, _score in ranked[:FIX_REFERENCE_RECORD_LIMIT]]
+
+    @staticmethod
+    def _fix_reference_record_score(issue: SonarIssue, record: SonarIssueRecord) -> float:
+        if LocalSonarHistoryRetriever._disposition_bucket(record) != "resolved":
+            return 0.0
+        rule_score = LocalSonarHistoryRetriever._rule_similarity(issue, record)
+        location_score = LocalSonarHistoryRetriever._location_similarity(issue, record)
+        if rule_score == 0.0 and location_score == 0.0:
+            return 0.0
+        score = (0.6 * rule_score) + (0.4 * location_score)
+        return round(score, 4)
+
+    def _fix_reference_for_record(
+        self,
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        pull_requests: list[PullRequestRecord],
+        files_by_pr: dict[int, list[PullRequestFileRecord]],
+    ) -> HistoricalFixReference | None:
+        resolved_at = _parse_timestamp(record.updated_at)
+        if resolved_at is None:
+            self._debug_fix_reference(
+                "fix_reference_record.missing_resolved_at",
+                issue=issue,
+                record_issue_key=record.issue_key,
+            )
+            return None
+
+        record_path = GlobalDatasetHistoryRetriever._component_path(record.component)
+        candidates: list[tuple[PullRequestRecord, int]] = []
+        for pull_request in pull_requests:
+            merged_at = _parse_timestamp(pull_request.merged_at)
+            if merged_at is None or merged_at > resolved_at:
+                self._debug_fix_reference(
+                    "fix_reference_record.skip_pr_after_resolution",
+                    issue=issue,
+                    record_issue_key=record.issue_key,
+                    record_path=record_path,
+                    pr_number=pull_request.pr_number,
+                    pr_merged_at=pull_request.merged_at,
+                    resolved_at=record.updated_at,
+                )
+                continue
+            age = resolved_at - merged_at
+            if age < timedelta(0) or age > timedelta(days=MAX_FIX_ATTRIBUTION_DELAY_DAYS):
+                self._debug_fix_reference(
+                    "fix_reference_record.skip_pr_outside_window",
+                    issue=issue,
+                    record_issue_key=record.issue_key,
+                    record_path=record_path,
+                    pr_number=pull_request.pr_number,
+                    pr_merged_at=pull_request.merged_at,
+                    resolved_at=record.updated_at,
+                    age_days=round(age.total_seconds() / 86400, 4),
+                )
+                continue
+            if not self._pull_request_touches_path(
+                files_by_pr.get(pull_request.pr_number, []),
+                record_path,
+            ):
+                self._debug_fix_reference(
+                    "fix_reference_record.skip_pr_missing_file_touch",
+                    issue=issue,
+                    record_issue_key=record.issue_key,
+                    record_path=record_path,
+                    pr_number=pull_request.pr_number,
+                )
+                continue
+            candidates.append((pull_request, int(age.total_seconds())))
+
+        if not candidates:
+            self._debug_fix_reference(
+                "fix_reference_record.no_viable_pr_candidates",
+                issue=issue,
+                record_issue_key=record.issue_key,
+                record_rule=record.rule,
+                record_component=record.component,
+                resolved_at=record.updated_at,
+            )
+            return None
+
+        candidates.sort(key=lambda item: (item[1], -item[0].pr_number))
+        pull_request = candidates[0][0]
+        files = files_by_pr.get(pull_request.pr_number, [])
+        confidence = self._fix_reference_confidence(issue, record, files)
+        if confidence < 0.7:
+            self._debug_fix_reference(
+                "fix_reference_record.reject_low_confidence",
+                issue=issue,
+                record_issue_key=record.issue_key,
+                pr_number=pull_request.pr_number,
+                confidence=confidence,
+            )
+            return None
+
+        reference = HistoricalFixReference(
+            pr_number=pull_request.pr_number,
+            pr_title=pull_request.title,
+            pr_url=self._pull_request_url(pull_request.pr_number),
+            file_url=f"{self._pull_request_url(pull_request.pr_number)}/files",
+            file_path=record_path,
+            resolved_at=record.updated_at or "",
+            confidence=confidence,
+            evidence=self._fix_reference_evidence(issue, record, files),
+        )
+        self._debug_fix_reference(
+            "fix_reference_record.accepted",
+            issue=issue,
+            record_issue_key=record.issue_key,
+            pr_number=reference.pr_number,
+            confidence=reference.confidence,
+            evidence=" | ".join(reference.evidence),
+        )
+        return reference
+
+    @staticmethod
+    def _pull_request_touches_path(
+        files: list[PullRequestFileRecord],
+        issue_path: str,
+    ) -> bool:
+        return any(file_record.file_path == issue_path for file_record in files)
+
+    @staticmethod
+    def _bounded_fix_reference_pull_requests(
+        pull_requests: list[PullRequestRecord],
+    ) -> list[PullRequestRecord]:
+        dated_pull_requests = [
+            (pull_request, merged_at)
+            for pull_request in pull_requests
+            if (merged_at := _parse_timestamp(pull_request.merged_at)) is not None
+        ]
+        if not dated_pull_requests:
+            return []
+
+        dated_pull_requests.sort(
+            key=lambda item: (item[1], item[0].pr_number),
+            reverse=True,
+        )
+        newest_merge = dated_pull_requests[0][1]
+        cutoff = newest_merge - timedelta(days=FIX_REFERENCE_LOOKBACK_DAYS)
+        time_window = [
+            pull_request
+            for pull_request, merged_at in dated_pull_requests
+            if merged_at >= cutoff
+        ]
+        count_window = [
+            pull_request
+            for pull_request, _merged_at in dated_pull_requests[:FIX_REFERENCE_PR_LIMIT]
+        ]
+
+        if len(time_window) >= MIN_FIX_REFERENCE_WINDOW_PRS:
+            return time_window[:FIX_REFERENCE_PR_LIMIT]
+        return count_window
+
+    @staticmethod
+    def _fix_reference_confidence(
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        files: list[PullRequestFileRecord],
+    ) -> float:
+        record_path = GlobalDatasetHistoryRetriever._component_path(record.component)
+        confidence = 0.0
+        if record.rule == issue.rule:
+            confidence += 0.3
+        if record_path == issue.location.path:
+            confidence += 0.25
+        if any(file_record.file_path == record_path for file_record in files):
+            confidence += 0.25
+        if record.line is not None:
+            confidence += 0.1
+        if not any(
+            LocalSonarHistoryRetriever._is_analysis_config_path(file_record.file_path)
+            for file_record in files
+        ):
+            confidence += 0.1
+        return round(min(confidence, 1.0), 2)
+
+    @staticmethod
+    def _fix_reference_evidence(
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        files: list[PullRequestFileRecord],
+    ) -> tuple[str, ...]:
+        evidence = [
+            f"same Sonar rule `{record.rule}`",
+            "Sonar marked the historical issue as fixed/resolved",
+        ]
+        record_path = GlobalDatasetHistoryRetriever._component_path(record.component)
+        if record_path == issue.location.path:
+            evidence.append(f"same file `{record_path}`")
+        elif any(file_record.file_path == record_path for file_record in files):
+            evidence.append(f"PR touched historical file `{record_path}`")
+        if record.line is not None:
+            evidence.append(f"historical issue was near line {record.line}")
+        if any(
+            LocalSonarHistoryRetriever._is_analysis_config_path(file_record.file_path)
+            for file_record in files
+        ):
+            evidence.append("PR also touched analysis configuration, so confidence is lower")
+        return tuple(evidence)
+
+    @staticmethod
+    def _is_analysis_config_path(path: str) -> bool:
+        normalized = path.lower()
+        filename = Path(normalized).name
+        return (
+            filename in {"sonar-project.properties", "pom.xml", "build.gradle", "build.gradle.kts"}
+            or normalized.startswith(".github/workflows/")
+            or "quality-profile" in normalized
+            or "ruleset" in normalized
+        )
+
+    def _pull_request_url(self, pr_number: int) -> str:
+        return f"https://github.com/{self._repository_key}/pull/{pr_number}"
+
+    def _debug_fix_reference(
+        self,
+        event: str,
+        *,
+        issue: SonarIssue,
+        **extra: object,
+    ) -> None:
+        fix_reference_debug_logger.debug(
+            event,
+            extra={
+                "repository": self._repository_key,
+                "issue_key": issue.key,
+                "issue_rule": issue.rule,
+                "issue_path": issue.location.path,
+                "issue_line": issue.location.line,
+                **extra,
+            },
+        )
 
 
 class LocalGitHistoryRetriever:
@@ -808,7 +1271,7 @@ class LocalGitHistoryRetriever:
         return (
             record_path == issue_path
             or (
-                issue_family
+                bool(issue_family)
                 and GlobalDatasetHistoryRetriever._path_family(record_path) == issue_family
             )
         )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import cast
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
@@ -82,43 +82,49 @@ class SonarQubeClient:
             issues_upserted = 0
             observations_recorded = 0
 
-            while True:
-                payload = self._execute_request(
-                    self._build_project_history_request(page_number, page_size)
-                )
-                pages_fetched += 1
-                raw_issues = payload.get("issues", [])
-                total = payload.get("total", 0)
-                if not isinstance(raw_issues, list):
-                    break
-
-                page_result = self._sync_project_history_page(
-                    store=store,
-                    repository_key=repository_key,
-                    raw_issues=raw_issues,
-                    previous_cursor=previous_cursor,
-                    latest_update=latest_update,
-                )
-                issues_seen += page_result.issues_seen
-                issues_upserted += page_result.issues_upserted
-                observations_recorded += page_result.observations_recorded
-                latest_update = page_result.latest_update
-
-                if latest_update is not None:
-                    store.upsert_sync_state(
-                        SyncStateRecord(
-                            repository_key=repository_key,
-                            source_name=LOCAL_SONAR_SYNC_SOURCE,
-                            cursor=latest_update,
-                            updated_at=latest_update,
+            for resolved_filter in ("false", "true"):
+                page_number = 1
+                while True:
+                    payload = self._execute_request(
+                        self._build_project_history_request(
+                            page_number,
+                            page_size,
+                            resolved=resolved_filter,
                         )
                     )
+                    pages_fetched += 1
+                    raw_issues = payload.get("issues", [])
+                    total = payload.get("total", 0)
+                    if not isinstance(raw_issues, list):
+                        break
 
-                if page_result.should_stop:
-                    break
-                if not isinstance(total, int) or page_number * page_size >= total:
-                    break
-                page_number += 1
+                    page_result = self._sync_project_history_page(
+                        store=store,
+                        repository_key=repository_key,
+                        raw_issues=raw_issues,
+                        previous_cursor=previous_cursor,
+                        latest_update=latest_update,
+                    )
+                    issues_seen += page_result.issues_seen
+                    issues_upserted += page_result.issues_upserted
+                    observations_recorded += page_result.observations_recorded
+                    latest_update = page_result.latest_update
+
+                    if latest_update is not None:
+                        store.upsert_sync_state(
+                            SyncStateRecord(
+                                repository_key=repository_key,
+                                source_name=LOCAL_SONAR_SYNC_SOURCE,
+                                cursor=latest_update,
+                                updated_at=latest_update,
+                            )
+                        )
+
+                    if page_result.should_stop:
+                        break
+                    if not isinstance(total, int) or page_number * page_size >= total:
+                        break
+                    page_number += 1
 
             return SonarProjectHistorySyncResult(
                 repository_key=repository_key,
@@ -221,7 +227,13 @@ class SonarQubeClient:
             },
         )
 
-    def _build_project_history_request(self, page_number: int, page_size: int) -> Request:
+    def _build_project_history_request(
+        self,
+        page_number: int,
+        page_size: int,
+        *,
+        resolved: str,
+    ) -> Request:
         params = urlencode(
             {
                 "componentKeys": self._settings.sonar_project_key,
@@ -229,6 +241,7 @@ class SonarQubeClient:
                 "p": str(page_number),
                 "s": "UPDATE_DATE",
                 "asc": "false",
+                "resolved": resolved,
             }
         )
 
@@ -304,6 +317,8 @@ class SonarQubeClient:
             created_at=SonarQubeClient._optional_string(payload, "creationDate"),
             updated_at=SonarQubeClient._optional_string(payload, "updateDate"),
             branch=SonarQubeClient._optional_string(payload, "branch"),
+            line=issue.location.line,
+            end_line=issue.location.end_line,
         )
 
     @staticmethod

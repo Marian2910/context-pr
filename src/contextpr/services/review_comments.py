@@ -106,7 +106,7 @@ class ReviewCommentComposer:
             sections = [issue.message]
             if guidance.evidence_note is not None:
                 sections.append(guidance.evidence_note)
-            return " ".join(sections)
+            return "\n\n".join(sections)
 
         if duplicate_reference is not None:
             return f"Same as in [{duplicate_reference}]."
@@ -117,7 +117,7 @@ class ReviewCommentComposer:
             guidance.next_step,
             guidance.evidence_note,
         )
-        return " ".join(sections[:2]) if sections else issue.message
+        return "\n\n".join(sections[:2]) if sections else issue.message
 
     @staticmethod
     def issue_anchor(issue: SonarIssue, guidance_level: object) -> str | None:

@@ -6,12 +6,13 @@ import hashlib
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, Self
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _THREAD_LOCKS: dict[Path, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
@@ -61,6 +62,8 @@ class SonarIssueRecord:
     created_at: str | None = None
     updated_at: str | None = None
     branch: str | None = None
+    line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +237,7 @@ class HistoryStore:
                 (repository_key, created_at),
             )
             connection.commit()
+            assert cursor.lastrowid is not None
             return RepositoryRecord(
                 repository_id=int(cursor.lastrowid),
                 repository_key=repository_key,
@@ -331,9 +335,11 @@ class HistoryStore:
                     resolution,
                     created_at,
                     updated_at,
-                    branch
+                    branch,
+                    line,
+                    end_line
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(repository_id, issue_key) DO UPDATE SET
                     rule=excluded.rule,
                     issue_type=excluded.issue_type,
@@ -347,7 +353,9 @@ class HistoryStore:
                     resolution=excluded.resolution,
                     created_at=excluded.created_at,
                     updated_at=excluded.updated_at,
-                    branch=excluded.branch
+                    branch=excluded.branch,
+                    line=excluded.line,
+                    end_line=excluded.end_line
                 """,
                 (
                     repository.repository_id,
@@ -365,6 +373,8 @@ class HistoryStore:
                     record.created_at,
                     record.updated_at,
                     record.branch,
+                    record.line,
+                    record.end_line,
                 ),
             )
             connection.commit()
@@ -379,7 +389,8 @@ class HistoryStore:
                 """
                 SELECT issue_key, rule, issue_type, severity, component, message,
                        tags_json, clean_code_attribute, clean_code_attribute_category,
-                       status, resolution, created_at, updated_at, branch
+                       status, resolution, created_at, updated_at, branch,
+                       line, end_line
                 FROM sonar_issues
                 WHERE repository_id = ?
                 ORDER BY issue_key
@@ -402,6 +413,8 @@ class HistoryStore:
                 created_at=_row_value(row, "created_at"),
                 updated_at=_row_value(row, "updated_at"),
                 branch=_row_value(row, "branch"),
+                line=row["line"],
+                end_line=row["end_line"],
             )
             for row in rows
         ]
@@ -837,7 +850,7 @@ class HistoryStore:
         ]
 
     @contextlib.contextmanager
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -892,6 +905,8 @@ class HistoryStore:
                 created_at TEXT,
                 updated_at TEXT,
                 branch TEXT,
+                line INTEGER,
+                end_line INTEGER,
                 PRIMARY KEY (repository_id, issue_key),
                 FOREIGN KEY (repository_id) REFERENCES repositories(repository_id) ON DELETE CASCADE
             );
@@ -985,6 +1000,8 @@ class HistoryStore:
                 ON pull_request_review_comments(repository_id, pr_number);
             """
         )
+        _ensure_column(connection, "sonar_issues", "line", "INTEGER")
+        _ensure_column(connection, "sonar_issues", "end_line", "INTEGER")
         version = _read_schema_version(connection)
         if version > SCHEMA_VERSION:
             raise SchemaVersionError(
@@ -1044,6 +1061,20 @@ def _row_value(row: sqlite3.Row, key: str) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    if any(str(row["name"]) == column_name for row in rows):
+        return
+    connection.execute(
+        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+    )
 
 
 def _utc_now() -> str:
