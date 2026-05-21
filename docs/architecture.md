@@ -40,12 +40,15 @@ The orchestration flow is:
 
 1. Resolve configuration and runtime options.
 2. Retrieve pull request issue data from SonarQube or SonarCloud.
-3. Retrieve changed pull request lines from GitHub.
-4. Keep only Sonar issues that can be attached to newly changed lines.
-5. Look up historical context from the curated issue dataset.
-6. Decide whether the issue should receive no, minimal, contextual, or detailed enrichment.
-7. Compose concise review comments.
-8. Post or preview inline GitHub review comments.
+3. Optionally synchronize local Sonar, Git, pull request, and review-comment history into the
+   SQLite store.
+4. Retrieve changed pull request lines from GitHub.
+5. Keep only Sonar issues that can be attached to newly changed lines.
+6. Look up historical context from the curated issue dataset and, when enabled, the local
+   repository history store.
+7. Decide whether the issue should receive no, minimal, contextual, or detailed enrichment.
+8. Compose concise review comments.
+9. Post or preview inline GitHub review comments.
 
 ## Enrichment strategy
 
@@ -78,7 +81,26 @@ Each issue receives one of four guidance levels:
 This keeps simple warnings, such as unused local variables, from receiving redundant paraphrases
 of the Sonar message.
 
+Review comments are rendered as short paragraph-separated sections rather than one dense block.
+In practice this usually means:
+
+1. the original Sonar message
+2. a short explanation or follow-up recommendation when warranted
+3. a historical note when the evidence is grounded enough
+
 ## Historical context
+
+ContextPR uses two history sources:
+
+- the curated dataset used for broader offline similarity experiments
+- the local repository history store populated through `contextpr sync-history`
+
+Local repository history can include:
+
+- Sonar project issue history
+- repository commit/file-touch history
+- merged pull request/file history
+- historical GitHub review comments
 
 Historical retrieval scores previous issues using rule, type, clean-code metadata, severity,
 file extension, tags, and message overlap. Historical notes are shown only when the evidence is
@@ -93,12 +115,17 @@ The wording is confidence-aware. Small samples use cautious phrasing such as "in
 similar cases". Stronger evidence can use "often" or "usually". When the historical distribution
 is close across buckets, ContextPR reports mixed history instead of forcing a single conclusion.
 
+When local Sonar history contains a resolved issue that can be attributed to a merged pull request,
+ContextPR can also attach a historical PR reference. That path is intentionally stricter than
+generic similarity notes: it requires merged PR evidence and touched-file support before a link is
+shown in the final GitHub comment.
+
 ## Machine learning status
 
 The repository still contains experimental ML training and inference utilities, but the current
-production enrichment path does not load or call the intent classifier. This keeps deployed
-comments deterministic, explainable, and easier to validate. The ML components can be evaluated
-later as a research extension if they prove useful.
+production enrichment path does not load or call the intent classifier. Deployed comments are
+currently deterministic, explainable, and easier to validate. The ML components can still be
+evaluated later as a research extension if they prove useful.
 
 ## Reusable action packaging
 
@@ -118,7 +145,6 @@ available to the GitHub Action without duplicating the implementation in a separ
 The implementation leaves room for:
 
 - richer domain models for findings and comments
-- persistence for cached historical context
 - additional rule mappings and language-specific pattern tables
 - retrieval evaluation and stronger historical ranking
 - optional ML intent classification after offline validation

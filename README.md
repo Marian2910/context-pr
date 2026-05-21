@@ -1,11 +1,12 @@
 # ContextPR
 
-ContextPR is a Python prototype for enriching SonarQube or SonarCloud pull request findings
-with historical context and publishing actionable inline feedback on GitHub pull requests.
+ContextPR is a Python tool for enriching SonarQube or SonarCloud pull request findings
+with repository-aware historical context and publishing actionable inline feedback on GitHub
+pull requests.
 
-The current repository contains the initial production-ready scaffold only. It provides a
-small reusable package, a CLI entry point, a reusable GitHub Action wrapper, configuration
-loading, integrations, tests, and CI so the business logic can be added incrementally.
+The current implementation already supports deterministic comment generation, local history
+sync, historical PR-link evidence for resolved issues, a reusable CLI, and a Docker-based
+GitHub Action wrapper.
 
 ## Architecture at a glance
 
@@ -14,17 +15,19 @@ The package is organized around a few clear concerns:
 - `contextpr.cli`: user-facing command line entry points.
 - `contextpr.config`: environment-driven configuration loading.
 - `contextpr.integrations`: external system clients for GitHub and SonarQube/SonarCloud.
-- `contextpr.enrichment`: future historical and NLP-based enrichment services.
+- `contextpr.enrichment`: deterministic issue enrichment, historical retrieval, and message building.
 - `contextpr.models`: shared application models.
+- `contextpr.services`: pull request analysis and review comment composition.
 - `contextpr.utils`: small reusable helper functions.
 
-The expected future pipeline is:
+The current analysis pipeline is:
 
 1. Load runtime configuration.
 2. Read Sonar pull request analysis results.
-3. Enrich issues with repository and historical context.
-4. Generate review-ready comment text.
-5. Post inline GitHub pull request comments.
+3. Optionally synchronize local Sonar, Git, and GitHub history into a SQLite store.
+4. Enrich issues with repository and historical context.
+5. Generate review-ready comment text.
+6. Post inline GitHub pull request comments.
 
 The same Python package can be used in two ways:
 
@@ -69,6 +72,7 @@ Run the CLI:
 ```bash
 contextpr --help
 contextpr analyze --pr-number 123 --dry-run
+contextpr sync-history
 ```
 
 You can also invoke the package directly:
@@ -76,6 +80,70 @@ You can also invoke the package directly:
 ```bash
 python -m contextpr --help
 ```
+
+## Local history mode
+
+ContextPR can enrich Sonar findings with repository-local history gathered from:
+
+- historical Sonar project issues
+- merged pull requests and touched files
+- repository commit history
+- historical GitHub review comments
+
+Enable it with:
+
+```bash
+export CONTEXTPR_ENABLE_LOCAL_HISTORY=true
+```
+
+By default, local history is stored in:
+
+```bash
+~/.contextpr/history.db
+```
+
+To populate or refresh that store explicitly:
+
+```bash
+contextpr sync-history
+```
+
+When local history is enabled, `contextpr analyze` also refreshes history before composing PR
+comments.
+
+## Comment style
+
+ContextPR does not add text to every Sonar issue. It tries to stay out of the way when Sonar
+is already clear, and adds more context only when it has grounded historical evidence.
+
+Depending on the issue and the available history, comments may include:
+
+- the original Sonar message as the opening sentence
+- a short follow-up recommendation such as "This looks like a reasonable fix to keep in this PR."
+- a historical note about how similar issues were usually handled in this repository
+- a linked historical PR when ContextPR can connect a fixed Sonar issue to merged PR file evidence
+
+Rendered comments are intentionally split into short paragraphs to make the guidance easier to
+scan in GitHub reviews.
+
+## Debugging historical PR links
+
+When local history is enabled, ContextPR can also write fix-reference diagnostics to a log file.
+
+Default path:
+
+```bash
+.contextpr/fix_reference_debug.log
+```
+
+Override it with:
+
+```bash
+export CONTEXTPR_FIX_REFERENCE_DEBUG_LOG_PATH=/path/to/fix_reference_debug.log
+```
+
+This log is useful when a historical PR link does not appear and you need to check whether the
+candidate was not found, rejected, or dropped during message rendering.
 
 ## Using the GitHub Action
 
@@ -136,6 +204,11 @@ make ci
 
 ## Status
 
-This repository is intentionally minimal at this stage. It is a scaffold for a future system
-that will provide contextual SonarQube feedback in pull requests, not a full implementation
-of the GitHub or Sonar APIs yet.
+The repository is still a research-oriented prototype, but it already supports the end-to-end
+workflow needed for pull-request review experiments:
+
+- Sonar pull request issue retrieval
+- selective historical enrichment
+- repository-local history sync
+- historical PR-link evidence for fixed issues
+- GitHub inline review comment publishing
