@@ -278,24 +278,12 @@ class IssueEnricher:
         if context_signals.self_explanatory and not context_signals.local_recurrence:
             return CommentIntent.NONE
 
-        if context_signals.local_recurrence:
-            if context_signals.persistence_high:
-                return CommentIntent.DECIDE_BEFORE_DEFERRING
-            if self._has_fix_signal(context_signals):
-                return CommentIntent.WORTH_FIXING_NOW
-            if context_signals.strong_history and not context_signals.self_explanatory:
-                return CommentIntent.RECURS_HERE
-
         if self._should_fix_local_code_smell(issue, context_signals):
             return CommentIntent.WORTH_FIXING_NOW
 
-        if self._uses_non_local_history(context_signals):
-            if context_signals.persistence_high:
-                return CommentIntent.DECIDE_BEFORE_DEFERRING
-            if self._has_fix_signal(context_signals):
-                return CommentIntent.WORTH_FIXING_NOW
-            if not context_signals.self_explanatory:
-                return CommentIntent.RECURS_HERE
+        history_driven_intent = self._history_driven_intent(context_signals)
+        if history_driven_intent is not None:
+            return history_driven_intent
 
         return CommentIntent.NONE
 
@@ -322,6 +310,43 @@ class IssueEnricher:
     @staticmethod
     def _uses_non_local_history(context_signals: ContextSignals) -> bool:
         return not context_signals.source_is_local and context_signals.strong_history
+
+    @classmethod
+    def _history_driven_intent(
+        cls,
+        context_signals: ContextSignals,
+    ) -> CommentIntent | None:
+        if cls._should_defer_from_history(context_signals):
+            return CommentIntent.DECIDE_BEFORE_DEFERRING
+        if cls._should_fix_from_history(context_signals):
+            return CommentIntent.WORTH_FIXING_NOW
+        if cls._should_mark_history_recurrence(context_signals):
+            return CommentIntent.RECURS_HERE
+        return None
+
+    @classmethod
+    def _should_defer_from_history(cls, context_signals: ContextSignals) -> bool:
+        return cls._uses_history_for_guidance(context_signals) and context_signals.persistence_high
+
+    @classmethod
+    def _should_fix_from_history(cls, context_signals: ContextSignals) -> bool:
+        return cls._uses_history_for_guidance(context_signals) and cls._has_fix_signal(
+            context_signals
+        )
+
+    @classmethod
+    def _should_mark_history_recurrence(
+        cls,
+        context_signals: ContextSignals,
+    ) -> bool:
+        return (
+            cls._uses_history_for_guidance(context_signals)
+            and not context_signals.self_explanatory
+        )
+
+    @classmethod
+    def _uses_history_for_guidance(cls, context_signals: ContextSignals) -> bool:
+        return context_signals.local_recurrence or cls._uses_non_local_history(context_signals)
 
     def _issue_language_profile(
         self,
@@ -455,22 +480,20 @@ class IssueEnricher:
     ) -> DeveloperGuidance:
         return DeveloperGuidance(
             level=GuidanceLevel.DETAILED,
-            explanation=(
-                None
-                if issue.issue_type == "CODE_SMELL"
-                else self._message_service.build_explanation(
-                    issue,
+                explanation=(
+                    None
+                    if issue.issue_type == "CODE_SMELL"
+                    else self._message_service.build_explanation(
+                        issue,
+                        context_signals,
+                        historical_context,
+                        history_source,
+                    )
+                ),
+                next_step=self._message_service.build_next_step(
                     comment_intent.value,
                     context_signals,
                     historical_context,
-                    history_source,
-                )
-            ),
-            next_step=self._message_service.build_next_step(
-                issue,
-                comment_intent.value,
-                context_signals,
-                historical_context,
                 history_source,
             ),
             evidence_note=self._message_service.build_evidence_note(

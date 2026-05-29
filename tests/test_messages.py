@@ -14,8 +14,8 @@ def test_message_service_builds_generic_behavior_sensitive_cleanup_guidance() ->
         issue_type="BUG",
     )
 
-    explanation = service.build_explanation(issue, "behavior_sensitive_cleanup", None, None)
-    next_step = service.build_next_step(issue, "behavior_sensitive_cleanup", None, None)
+    explanation = service.build_explanation(issue, None, None, None)
+    next_step = service.build_next_step("behavior_sensitive_cleanup", None, None, None)
 
     assert "prefix" not in explanation
     assert explanation == "Lambda captures loop variable."
@@ -35,8 +35,8 @@ def test_message_service_builds_bug_guidance_without_history() -> None:
         issue_type="BUG",
     )
 
-    explanation = service.build_explanation(issue, "behavior_risk", None, None)
-    next_step = service.build_next_step(issue, "behavior_risk", None, None)
+    explanation = service.build_explanation(issue, None, None, None)
+    next_step = service.build_next_step("behavior_risk", None, None, None)
 
     assert explanation == "Possible broken logic path."
     assert next_step is not None
@@ -54,8 +54,8 @@ def test_message_service_normalizes_code_smell_message() -> None:
         issue_type="CODE_SMELL",
     )
 
-    explanation = service.build_explanation(issue, "cleanup_candidate", None, None)
-    next_step = service.build_next_step(issue, "cleanup_candidate", None, None)
+    explanation = service.build_explanation(issue, None, None, None)
+    next_step = service.build_next_step("cleanup_candidate", None, None, None)
 
     assert explanation == "Refactor this helper for readability."
     assert next_step is None
@@ -83,7 +83,7 @@ def test_message_service_uses_history_for_non_smell_non_bug_next_step() -> None:
         issue_type="VULNERABILITY",
     )
 
-    next_step = service.build_next_step(issue, "general_review", context, "local_sonar")
+    next_step = service.build_next_step("general_review", None, context, "local_sonar")
 
     assert next_step is not None
     assert "small, local fix" in next_step.lower()

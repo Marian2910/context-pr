@@ -30,7 +30,6 @@ class DeterministicGuidanceMessageService:
     def build_explanation(
         self,
         issue: SonarIssue,
-        issue_pattern: str,
         context_signals: object | None = None,
         historical_context: HistoricalContext | None = None,
         history_source: str | None = None,
@@ -40,7 +39,6 @@ class DeterministicGuidanceMessageService:
 
     def build_next_step(
         self,
-        issue: SonarIssue,
         issue_pattern: str,
         context_signals: object | None = None,
         historical_context: HistoricalContext | None = None,
