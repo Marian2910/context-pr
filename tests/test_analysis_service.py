@@ -104,7 +104,7 @@ class FakeIssueEnricher:
                 ),
             ),
             historical_context=CombinedHistoricalContext(
-                global_dataset=HistoricalContext(
+                local_sonar=HistoricalContext(
                     sample_size=6,
                     same_rule_matches=3,
                     same_scope_matches=6,
@@ -143,9 +143,9 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert comments[0].line == 12
     assert "Sonar reported" not in comments[0].body
     assert "First issue." in comments[0].body
-    assert "This is probably safe to simplify if the current structure is not intentional." in comments[0].body
+    assert "This is probably safe to simplify if the current structure is not intentional." not in comments[0].body
     assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." not in comments[0].body
-    assert "Historically similar cases usually disappeared during later small refactors." not in comments[0].body
+    assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -332,6 +332,31 @@ def test_reviewer_note_uses_duplicate_reference_for_repeated_guidance() -> None:
     )
 
     assert note == "Same as in [src/uploads.py:31]."
+
+
+def test_reviewer_note_uses_duplicate_reference_for_repeated_minimal_guidance() -> None:
+    issue = SonarIssue(
+        key="issue-repeat-minimal",
+        rule="python:S1481",
+        severity="MINOR",
+        message='Remove the unused local variable "name".',
+        location=IssueLocation(path="src/app.py", line=14),
+        issue_type="CODE_SMELL",
+    )
+
+    note = AnalysisService._reviewer_note(
+        issue,
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.MINIMAL,
+                evidence_note="Historically similar cases were usually fixed.",
+            ),
+            historical_context=None,
+        ),
+        duplicate_reference="src/app.py:8",
+    )
+
+    assert note == "Same as in [src/app.py:8]."
 
 
 def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:

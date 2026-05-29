@@ -101,6 +101,9 @@ class ReviewCommentComposer:
         if enrichment is None:
             return issue.message
 
+        if duplicate_reference is not None:
+            return f"Same as in [{duplicate_reference}]."
+
         guidance = enrichment.guidance
         if guidance.level is guidance.level.MINIMAL:
             sections = [issue.message]
@@ -108,16 +111,24 @@ class ReviewCommentComposer:
                 sections.append(guidance.evidence_note)
             return "\n\n".join(sections)
 
-        if duplicate_reference is not None:
-            return f"Same as in [{duplicate_reference}]."
-
         sections = self.deduplicated_sections(
             self.issue_anchor(issue, guidance.level),
             guidance.explanation,
             guidance.next_step,
             guidance.evidence_note,
         )
-        return "\n\n".join(sections[:2]) if sections else issue.message
+        if not sections:
+            return issue.message
+        if guidance.evidence_note is not None:
+            selected_sections: list[str] = []
+            for section in sections:
+                if section == guidance.evidence_note:
+                    continue
+                selected_sections.append(section)
+                break
+            selected_sections.append(guidance.evidence_note)
+            return "\n\n".join(selected_sections)
+        return "\n\n".join(sections[:2])
 
     @staticmethod
     def issue_anchor(issue: SonarIssue, guidance_level: object) -> str | None:

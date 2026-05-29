@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -86,40 +87,43 @@ class ContextSignals:
 class IssueEnricher:
     def __init__(
         self,
-        dataset_path: Path,
+        dataset_path: Path | None = None,
         *,
         enable_local_history: bool = False,
         enable_local_git_history: bool = True,
         history_store: HistoryStore | None = None,
         repository_key: str | None = None,
     ) -> None:
-        self._global_history_retriever = GlobalDatasetHistoryRetriever(dataset_path)
         self._message_service = DeterministicGuidanceMessageService()
         self._enable_local_history = enable_local_history
-        self._local_history_retriever = (
-            LocalSonarHistoryRetriever(history_store, repository_key)
-            if enable_local_history and history_store is not None and repository_key is not None
+        self._dataset_history_retriever = (
+            GlobalDatasetHistoryRetriever(dataset_path)
+            if dataset_path is not None
             else None
         )
-        self._local_git_history_retriever = (
-            LocalGitHistoryRetriever(history_store, repository_key)
-            if (
-                enable_local_history
-                and enable_local_git_history
-                and history_store is not None
-                and repository_key is not None
-            )
-            else None
+        self._local_history_retriever = self._build_history_retriever(
+            LocalSonarHistoryRetriever,
+            enable_local_history=enable_local_history,
+            history_store=history_store,
+            repository_key=repository_key,
         )
-        self._local_pr_history_retriever = (
-            LocalPullRequestHistoryRetriever(history_store, repository_key)
-            if enable_local_history and history_store is not None and repository_key is not None
-            else None
+        self._local_git_history_retriever = self._build_history_retriever(
+            LocalGitHistoryRetriever,
+            enable_local_history=enable_local_history and enable_local_git_history,
+            history_store=history_store,
+            repository_key=repository_key,
         )
-        self._local_review_comment_history_retriever = (
-            LocalReviewCommentHistoryRetriever(history_store, repository_key)
-            if enable_local_history and history_store is not None and repository_key is not None
-            else None
+        self._local_pr_history_retriever = self._build_history_retriever(
+            LocalPullRequestHistoryRetriever,
+            enable_local_history=enable_local_history,
+            history_store=history_store,
+            repository_key=repository_key,
+        )
+        self._local_review_comment_history_retriever = self._build_history_retriever(
+            LocalReviewCommentHistoryRetriever,
+            enable_local_history=enable_local_history,
+            history_store=history_store,
+            repository_key=repository_key,
         )
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
@@ -152,28 +156,10 @@ class IssueEnricher:
         return IssueEnrichment(guidance=guidance, historical_context=historical_context)
 
     def _historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
+        global_dataset_context = self._retrieved_context(self._dataset_history_retriever, issue)
         if not self._enable_local_history:
-            return CombinedHistoricalContext(
-                global_dataset=self._actionable_or_none(
-                    self._global_history_retriever.find_context(issue)
-                )
-            )
+            return CombinedHistoricalContext(global_dataset=global_dataset_context)
 
-        local_context = self._local_historical_context(issue)
-        if local_context.preferred_source_name() is not None:
-            return local_context
-
-        return CombinedHistoricalContext(
-            local_sonar=local_context.local_sonar,
-            local_git=local_context.local_git,
-            local_prs=local_context.local_prs,
-            local_review_comments=local_context.local_review_comments,
-            global_dataset=self._actionable_or_none(
-                self._global_history_retriever.find_context(issue)
-            ),
-        )
-
-    def _local_historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
         return CombinedHistoricalContext(
             local_sonar=self._retrieved_context(self._local_history_retriever, issue),
             local_git=self._retrieved_context(self._local_git_history_retriever, issue),
@@ -182,7 +168,6 @@ class IssueEnricher:
                 self._local_review_comment_history_retriever,
                 issue,
             ),
-            global_dataset=None,
         )
 
     def _retrieved_context(
@@ -227,37 +212,20 @@ class IssueEnricher:
         history_source: str | None,
     ) -> DeveloperGuidance:
         if comment_intent is CommentIntent.INSPECT_BEFORE_CHANGING:
-            return DeveloperGuidance(
-                level=GuidanceLevel.DETAILED,
-                explanation=self._message_service.build_explanation(
-                    issue,
-                    comment_intent.value,
-                    context_signals,
-                    historical_context,
-                    history_source,
-                ),
-                next_step=self._message_service.build_next_step(
-                    issue,
-                    comment_intent.value,
-                    context_signals,
-                    historical_context,
-                    history_source,
-                ),
-            )
-
-        return DeveloperGuidance(
-            level=(
-                GuidanceLevel.MINIMAL
-                if context_signals.self_explanatory
-                else GuidanceLevel.CONTEXTUAL
-            ),
-            evidence_note=self._message_service.build_evidence_note(
+            return self._detailed_guidance(
                 issue,
-                comment_intent.value,
+                comment_intent,
                 context_signals,
                 historical_context,
                 history_source,
-            ),
+            )
+
+        return self._contextual_guidance(
+            issue,
+            comment_intent,
+            context_signals,
+            historical_context,
+            history_source,
         )
 
     def _context_signals(
@@ -307,52 +275,29 @@ class IssueEnricher:
         if context_signals.behavior_risk:
             return CommentIntent.INSPECT_BEFORE_CHANGING
 
-        if self._should_skip_self_explanatory_comment(context_signals):
+        if context_signals.self_explanatory and not context_signals.local_recurrence:
             return CommentIntent.NONE
 
-        if self._should_defer_for_local_persistence(context_signals):
-            return CommentIntent.DECIDE_BEFORE_DEFERRING
-
-        if self._should_fix_now_from_local_recurrence(context_signals):
-            return CommentIntent.WORTH_FIXING_NOW
-
-        if self._should_mark_recurrence(context_signals):
-            return CommentIntent.RECURS_HERE
+        if context_signals.local_recurrence:
+            if context_signals.persistence_high:
+                return CommentIntent.DECIDE_BEFORE_DEFERRING
+            if self._has_fix_signal(context_signals):
+                return CommentIntent.WORTH_FIXING_NOW
+            if context_signals.strong_history and not context_signals.self_explanatory:
+                return CommentIntent.RECURS_HERE
 
         if self._should_fix_local_code_smell(issue, context_signals):
             return CommentIntent.WORTH_FIXING_NOW
 
-        if self._should_defer_for_non_local_persistence(context_signals):
-            return CommentIntent.DECIDE_BEFORE_DEFERRING
-
-        if self._should_skip_non_local_recurrence(context_signals):
-            return CommentIntent.NONE
+        if self._uses_non_local_history(context_signals):
+            if context_signals.persistence_high:
+                return CommentIntent.DECIDE_BEFORE_DEFERRING
+            if self._has_fix_signal(context_signals):
+                return CommentIntent.WORTH_FIXING_NOW
+            if not context_signals.self_explanatory:
+                return CommentIntent.RECURS_HERE
 
         return CommentIntent.NONE
-
-    @staticmethod
-    def _should_skip_self_explanatory_comment(context_signals: ContextSignals) -> bool:
-        return context_signals.self_explanatory and not context_signals.local_recurrence
-
-    @staticmethod
-    def _should_defer_for_local_persistence(context_signals: ContextSignals) -> bool:
-        return context_signals.local_recurrence and context_signals.persistence_high
-
-    @staticmethod
-    def _should_fix_now_from_local_recurrence(context_signals: ContextSignals) -> bool:
-        return context_signals.local_recurrence and (
-            context_signals.fix_tendency_high
-            or context_signals.quick_fix_tendency_high
-            or context_signals.small_effort
-        )
-
-    @staticmethod
-    def _should_mark_recurrence(context_signals: ContextSignals) -> bool:
-        return (
-            not context_signals.self_explanatory
-            and context_signals.local_recurrence
-            and context_signals.strong_history
-        )
 
     @staticmethod
     def _should_fix_local_code_smell(
@@ -367,22 +312,16 @@ class IssueEnricher:
         )
 
     @staticmethod
-    def _should_defer_for_non_local_persistence(context_signals: ContextSignals) -> bool:
+    def _has_fix_signal(context_signals: ContextSignals) -> bool:
         return (
-            not context_signals.source_is_local
-            and context_signals.strong_history
-            and context_signals.persistence_high
-            and not context_signals.self_explanatory
+            context_signals.fix_tendency_high
+            or context_signals.quick_fix_tendency_high
+            or context_signals.small_effort
         )
 
     @staticmethod
-    def _should_skip_non_local_recurrence(context_signals: ContextSignals) -> bool:
-        return (
-            not context_signals.source_is_local
-            and context_signals.strong_history
-            and not context_signals.self_explanatory
-            and (context_signals.same_file_recurrence or context_signals.same_module_recurrence)
-        )
+    def _uses_non_local_history(context_signals: ContextSignals) -> bool:
+        return not context_signals.source_is_local and context_signals.strong_history
 
     def _issue_language_profile(
         self,
@@ -487,50 +426,83 @@ class IssueEnricher:
         historical_context: HistoricalContext | None,
         language_profile: IssueLanguageProfile,
     ) -> bool:
+        _ = historical_context
         if issue.issue_type == "BUG" or issue.rule in BEHAVIOR_RULES:
             return True
         if language_profile.ambiguity_markers:
             return True
-        if historical_context is None:
-            return False
-        if historical_context.dominant_maintenance == "behavior":
-            return historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         return False
 
-    def _maintainability_focus(self, historical_context: HistoricalContext) -> str:
-        return self._message_service.maintainability_focus(historical_context)
+    @staticmethod
+    def _build_history_retriever(
+        retriever_factory: Callable[[HistoryStore, str], object],
+        *,
+        enable_local_history: bool,
+        history_store: HistoryStore | None,
+        repository_key: str | None,
+    ) -> object | None:
+        if not enable_local_history or history_store is None or repository_key is None:
+            return None
+        return retriever_factory(history_store, repository_key)
 
-    def _issue_pattern(
+    def _detailed_guidance(
         self,
         issue: SonarIssue,
-        language_profile: IssueLanguageProfile | None = None,
-    ) -> str:
-        profile = language_profile or self._issue_language_profile(issue, None)
-        if issue.rule in SELF_EXPLANATORY_RULES or profile.self_explanatory_score >= 0.75:
-            return "self_explanatory_cleanup"
-        if issue.rule in BEHAVIOR_RULES or profile.ambiguity_markers or issue.issue_type == "BUG":
-            return "behavior_risk"
-        return "general_review"
-
-    def _build_maintainability_evidence_note(
-        self,
-        historical_context: HistoricalContext,
-        history_source: str | None = None,
-    ) -> str | None:
-        return self._message_service.build_evidence_note(
-            historical_context,
-            history_source,
+        comment_intent: CommentIntent,
+        context_signals: ContextSignals,
+        historical_context: HistoricalContext | None,
+        history_source: str | None,
+    ) -> DeveloperGuidance:
+        return DeveloperGuidance(
+            level=GuidanceLevel.DETAILED,
+            explanation=(
+                None
+                if issue.issue_type == "CODE_SMELL"
+                else self._message_service.build_explanation(
+                    issue,
+                    comment_intent.value,
+                    context_signals,
+                    historical_context,
+                    history_source,
+                )
+            ),
+            next_step=self._message_service.build_next_step(
+                issue,
+                comment_intent.value,
+                context_signals,
+                historical_context,
+                history_source,
+            ),
+            evidence_note=self._message_service.build_evidence_note(
+                issue,
+                comment_intent.value,
+                context_signals,
+                historical_context,
+                history_source,
+            ),
         )
 
-    @staticmethod
-    def _is_split_distribution(
-        distribution: tuple[tuple[str, int], ...],
-        *,
-        sample_size: int,
-    ) -> bool:
-        return DeterministicGuidanceMessageService.is_split_distribution(
-            distribution,
-            sample_size=sample_size,
+    def _contextual_guidance(
+        self,
+        issue: SonarIssue,
+        comment_intent: CommentIntent,
+        context_signals: ContextSignals,
+        historical_context: HistoricalContext | None,
+        history_source: str | None,
+    ) -> DeveloperGuidance:
+        return DeveloperGuidance(
+            level=(
+                GuidanceLevel.MINIMAL
+                if context_signals.self_explanatory
+                else GuidanceLevel.CONTEXTUAL
+            ),
+            evidence_note=self._message_service.build_evidence_note(
+                issue,
+                comment_intent.value,
+                context_signals,
+                historical_context,
+                history_source,
+            ),
         )
 
     @staticmethod
@@ -556,6 +528,8 @@ class IssueEnricher:
             return False
 
         assert historical_context is not None
+        if historical_context.fix_references:
+            return True
         if historical_context.dominant_disposition is not None:
             return True
         if historical_context.same_exact_path_matches >= HOTSPOT_FILE_MATCHES:
@@ -563,11 +537,6 @@ class IssueEnricher:
         if (
             historical_context.same_path_family_matches >= HOTSPOT_MODULE_MATCHES
             and historical_context.same_path_family_share >= HOTSPOT_MODULE_SHARE
-        ):
-            return True
-        if (
-            historical_context.dominant_maintenance in {"cleanup", "behavior"}
-            and historical_context.dominant_maintenance_share >= MIN_HISTORY_SHARE
         ):
             return True
         return False

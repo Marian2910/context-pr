@@ -1,202 +1,29 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
-import hashlib
 import sqlite3
-import threading
-import time
 from collections.abc import Iterator
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Self
+
+from contextpr.persistence.locking import (
+    RepositoryLock,
+    RepositoryLockManager,
+    SchemaVersionError,
+)
+from contextpr.persistence.records import (
+    GitCommitRecord,
+    GitFileTouchRecord,
+    PullRequestFileRecord,
+    PullRequestRecord,
+    PullRequestReviewCommentRecord,
+    RepositoryRecord,
+    SonarIssueObservationRecord,
+    SonarIssueRecord,
+    SyncStateRecord,
+)
 
 SCHEMA_VERSION = 2
-
-_THREAD_LOCKS: dict[Path, threading.Lock] = {}
-_THREAD_LOCKS_GUARD = threading.Lock()
-
-
-class HistoryStoreError(RuntimeError):
-    """Raised when the local history store cannot be used safely."""
-
-
-class RepositoryLockError(HistoryStoreError):
-    """Raised when a repository lock cannot be acquired."""
-
-
-class SchemaVersionError(HistoryStoreError):
-    """Raised when the on-disk schema is newer than the current code expects."""
-
-
-@dataclass(frozen=True, slots=True)
-class RepositoryRecord:
-    repository_id: int
-    repository_key: str
-    created_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class SyncStateRecord:
-    repository_key: str
-    source_name: str
-    cursor: str | None = None
-    updated_at: str | None = None
-    metadata_json: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SonarIssueRecord:
-    issue_key: str
-    rule: str
-    issue_type: str
-    severity: str
-    component: str
-    message: str
-    tags_json: str | None = None
-    clean_code_attribute: str | None = None
-    clean_code_attribute_category: str | None = None
-    status: str | None = None
-    resolution: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-    branch: str | None = None
-    line: int | None = None
-    end_line: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SonarIssueObservationRecord:
-    issue_key: str
-    observed_at: str
-    status: str | None = None
-    resolution: str | None = None
-    severity: str | None = None
-    component: str | None = None
-    branch: str | None = None
-    message: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class GitCommitRecord:
-    commit_sha: str
-    authored_at: str
-    message: str
-    classification: str = "unknown"
-
-
-@dataclass(frozen=True, slots=True)
-class GitFileTouchRecord:
-    commit_sha: str
-    file_path: str
-    module_family: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PullRequestRecord:
-    pr_number: int
-    title: str
-    body: str | None = None
-    state: str | None = None
-    merged_at: str | None = None
-    updated_at: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PullRequestFileRecord:
-    pr_number: int
-    file_path: str
-
-
-@dataclass(frozen=True, slots=True)
-class PullRequestReviewCommentRecord:
-    comment_id: int
-    pr_number: int
-    body: str
-    file_path: str | None = None
-    line: int | None = None
-    author_role: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-class RepositoryLock:
-    def __init__(
-        self,
-        *,
-        repository_key: str,
-        thread_lock: threading.Lock,
-        lock_file: Path,
-        handle: BinaryIO,
-    ) -> None:
-        self.repository_key = repository_key
-        self._thread_lock = thread_lock
-        self._lock_file = lock_file
-        self._handle = handle
-        self._released = False
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.release()
-
-    @property
-    def lock_file(self) -> Path:
-        return self._lock_file
-
-    def release(self) -> None:
-        if self._released:
-            return
-
-        fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-        self._handle.close()
-        self._thread_lock.release()
-        self._released = True
-
-
-class RepositoryLockManager:
-    def __init__(self, lock_dir: Path) -> None:
-        self._lock_dir = lock_dir.expanduser()
-
-    def acquire(
-        self,
-        repository_key: str,
-        *,
-        blocking: bool = True,
-        timeout_seconds: float | None = None,
-    ) -> RepositoryLock:
-        self._lock_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = self._lock_dir / _repository_lock_filename(repository_key)
-        thread_lock = _thread_lock_for(lock_file)
-        if not _acquire_thread_lock(
-            thread_lock,
-            blocking=blocking,
-            timeout_seconds=timeout_seconds,
-        ):
-            raise RepositoryLockError(
-                f"Could not acquire in-process lock for repository {repository_key!r}."
-            )
-
-        handle = lock_file.open("a+b")
-        try:
-            _acquire_file_lock(
-                handle,
-                blocking=blocking,
-                timeout_seconds=timeout_seconds,
-            )
-        except Exception:
-            handle.close()
-            thread_lock.release()
-            raise
-
-        return RepositoryLock(
-            repository_key=repository_key,
-            thread_lock=thread_lock,
-            lock_file=lock_file,
-            handle=handle,
-        )
 
 
 class HistoryStore:
@@ -292,28 +119,18 @@ class HistoryStore:
         repository_key: str,
         source_name: str,
     ) -> SyncStateRecord | None:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return None
-
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT source_name, cursor, updated_at, metadata_json
-                FROM sync_state
-                WHERE repository_id = ? AND source_name = ?
-                """,
-                (repository.repository_id, source_name),
-            ).fetchone()
+        row = self._fetch_repository_row(
+            repository_key,
+            """
+            SELECT source_name, cursor, updated_at, metadata_json
+            FROM sync_state
+            WHERE repository_id = ? AND source_name = ?
+            """,
+            (source_name,),
+        )
         if row is None:
             return None
-        return SyncStateRecord(
-            repository_key=repository_key,
-            source_name=str(row["source_name"]),
-            cursor=_row_value(row, "cursor"),
-            updated_at=_row_value(row, "updated_at"),
-            metadata_json=_row_value(row, "metadata_json"),
-        )
+        return _sync_state_from_row(repository_key, row)
 
     def upsert_sonar_issue(self, repository_key: str, record: SonarIssueRecord) -> None:
         repository = self.ensure_repository(repository_key)
@@ -380,44 +197,19 @@ class HistoryStore:
             connection.commit()
 
     def list_sonar_issues(self, repository_key: str) -> list[SonarIssueRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT issue_key, rule, issue_type, severity, component, message,
-                       tags_json, clean_code_attribute, clean_code_attribute_category,
-                       status, resolution, created_at, updated_at, branch,
-                       line, end_line
-                FROM sonar_issues
-                WHERE repository_id = ?
-                ORDER BY issue_key
-                """,
-                (repository.repository_id,),
-            ).fetchall()
-        return [
-            SonarIssueRecord(
-                issue_key=str(row["issue_key"]),
-                rule=str(row["rule"]),
-                issue_type=str(row["issue_type"]),
-                severity=str(row["severity"]),
-                component=str(row["component"]),
-                message=str(row["message"]),
-                tags_json=_row_value(row, "tags_json"),
-                clean_code_attribute=_row_value(row, "clean_code_attribute"),
-                clean_code_attribute_category=_row_value(row, "clean_code_attribute_category"),
-                status=_row_value(row, "status"),
-                resolution=_row_value(row, "resolution"),
-                created_at=_row_value(row, "created_at"),
-                updated_at=_row_value(row, "updated_at"),
-                branch=_row_value(row, "branch"),
-                line=row["line"],
-                end_line=row["end_line"],
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT issue_key, rule, issue_type, severity, component, message,
+                   tags_json, clean_code_attribute, clean_code_attribute_category,
+                   status, resolution, created_at, updated_at, branch,
+                   line, end_line
+            FROM sonar_issues
+            WHERE repository_id = ?
+            ORDER BY issue_key
+            """,
+        )
+        return [_sonar_issue_from_row(row) for row in rows]
 
     def record_sonar_issue_observation(
         self,
@@ -460,34 +252,18 @@ class HistoryStore:
         repository_key: str,
         issue_key: str,
     ) -> list[SonarIssueObservationRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT issue_key, observed_at, status, resolution, severity,
-                       component, branch, message
-                FROM sonar_issue_observations
-                WHERE repository_id = ? AND issue_key = ?
-                ORDER BY observed_at
-                """,
-                (repository.repository_id, issue_key),
-            ).fetchall()
-        return [
-            SonarIssueObservationRecord(
-                issue_key=str(row["issue_key"]),
-                observed_at=str(row["observed_at"]),
-                status=_row_value(row, "status"),
-                resolution=_row_value(row, "resolution"),
-                severity=_row_value(row, "severity"),
-                component=_row_value(row, "component"),
-                branch=_row_value(row, "branch"),
-                message=_row_value(row, "message"),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT issue_key, observed_at, status, resolution, severity,
+                   component, branch, message
+            FROM sonar_issue_observations
+            WHERE repository_id = ? AND issue_key = ?
+            ORDER BY observed_at
+            """,
+            (issue_key,),
+        )
+        return [_sonar_issue_observation_from_row(row) for row in rows]
 
     def upsert_git_commit(
         self,
@@ -528,7 +304,8 @@ class HistoryStore:
                 """,
                 (repository.repository_id, record.commit_sha),
             )
-            connection.executemany(
+            _executemany_if_rows(
+                connection,
                 """
                 INSERT INTO git_file_touches (
                     repository_id,
@@ -538,7 +315,7 @@ class HistoryStore:
                 )
                 VALUES (?, ?, ?, ?)
                 """,
-                [
+                (
                     (
                         repository.repository_id,
                         touch.commit_sha,
@@ -546,58 +323,33 @@ class HistoryStore:
                         touch.module_family,
                     )
                     for touch in touches
-                ],
+                ),
             )
             connection.commit()
 
     def list_git_commits(self, repository_key: str) -> list[GitCommitRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT commit_sha, authored_at, message, classification
-                FROM git_commits
-                WHERE repository_id = ?
-                ORDER BY authored_at DESC, commit_sha DESC
-                """,
-                (repository.repository_id,),
-            ).fetchall()
-        return [
-            GitCommitRecord(
-                commit_sha=str(row["commit_sha"]),
-                authored_at=str(row["authored_at"]),
-                message=str(row["message"]),
-                classification=str(row["classification"]),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT commit_sha, authored_at, message, classification
+            FROM git_commits
+            WHERE repository_id = ?
+            ORDER BY authored_at DESC, commit_sha DESC
+            """,
+        )
+        return [_git_commit_from_row(row) for row in rows]
 
     def list_git_file_touches(self, repository_key: str) -> list[GitFileTouchRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT commit_sha, file_path, module_family
-                FROM git_file_touches
-                WHERE repository_id = ?
-                ORDER BY commit_sha, file_path
-                """,
-                (repository.repository_id,),
-            ).fetchall()
-        return [
-            GitFileTouchRecord(
-                commit_sha=str(row["commit_sha"]),
-                file_path=str(row["file_path"]),
-                module_family=_row_value(row, "module_family"),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT commit_sha, file_path, module_family
+            FROM git_file_touches
+            WHERE repository_id = ?
+            ORDER BY commit_sha, file_path
+            """,
+        )
+        return [_git_file_touch_from_row(row) for row in rows]
 
     def upsert_pull_request(
         self,
@@ -645,7 +397,8 @@ class HistoryStore:
                 """,
                 (repository.repository_id, record.pr_number),
             )
-            connection.executemany(
+            _executemany_if_rows(
+                connection,
                 """
                 INSERT INTO pull_request_files (
                     repository_id,
@@ -654,12 +407,17 @@ class HistoryStore:
                 )
                 VALUES (?, ?, ?)
                 """,
-                [
-                    (repository.repository_id, file_record.pr_number, file_record.file_path)
+                (
+                    (
+                        repository.repository_id,
+                        file_record.pr_number,
+                        file_record.file_path,
+                    )
                     for file_record in files
-                ],
+                ),
             )
-            connection.executemany(
+            _executemany_if_rows(
+                connection,
                 """
                 INSERT INTO pull_request_review_comments (
                     repository_id,
@@ -682,7 +440,7 @@ class HistoryStore:
                     created_at=excluded.created_at,
                     updated_at=excluded.updated_at
                 """,
-                [
+                (
                     (
                         repository.repository_id,
                         review_comment.comment_id,
@@ -695,7 +453,7 @@ class HistoryStore:
                         review_comment.updated_at,
                     )
                     for review_comment in review_comments
-                ],
+                ),
             )
             connection.commit()
 
@@ -704,150 +462,81 @@ class HistoryStore:
         repository_key: str,
         pr_number: int,
     ) -> PullRequestRecord | None:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return None
-
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT pr_number, title, body, state, merged_at, updated_at
-                FROM pull_requests
-                WHERE repository_id = ? AND pr_number = ?
-                """,
-                (repository.repository_id, pr_number),
-            ).fetchone()
+        row = self._fetch_repository_row(
+            repository_key,
+            """
+            SELECT pr_number, title, body, state, merged_at, updated_at
+            FROM pull_requests
+            WHERE repository_id = ? AND pr_number = ?
+            """,
+            (pr_number,),
+        )
         if row is None:
             return None
-        return PullRequestRecord(
-            pr_number=int(row["pr_number"]),
-            title=str(row["title"]),
-            body=_row_value(row, "body"),
-            state=_row_value(row, "state"),
-            merged_at=_row_value(row, "merged_at"),
-            updated_at=_row_value(row, "updated_at"),
-        )
+        return _pull_request_from_row(row)
 
     def list_pull_requests(self, repository_key: str) -> list[PullRequestRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT pr_number, title, body, state, merged_at, updated_at
-                FROM pull_requests
-                WHERE repository_id = ?
-                ORDER BY updated_at DESC, pr_number DESC
-                """,
-                (repository.repository_id,),
-            ).fetchall()
-        return [
-            PullRequestRecord(
-                pr_number=int(row["pr_number"]),
-                title=str(row["title"]),
-                body=_row_value(row, "body"),
-                state=_row_value(row, "state"),
-                merged_at=_row_value(row, "merged_at"),
-                updated_at=_row_value(row, "updated_at"),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT pr_number, title, body, state, merged_at, updated_at
+            FROM pull_requests
+            WHERE repository_id = ?
+            ORDER BY updated_at DESC, pr_number DESC
+            """,
+        )
+        return [_pull_request_from_row(row) for row in rows]
 
     def list_pull_request_files(
         self,
         repository_key: str,
         pr_number: int,
     ) -> list[PullRequestFileRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT pr_number, file_path
-                FROM pull_request_files
-                WHERE repository_id = ? AND pr_number = ?
-                ORDER BY file_path
-                """,
-                (repository.repository_id, pr_number),
-            ).fetchall()
-        return [
-            PullRequestFileRecord(
-                pr_number=int(row["pr_number"]),
-                file_path=str(row["file_path"]),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT pr_number, file_path
+            FROM pull_request_files
+            WHERE repository_id = ? AND pr_number = ?
+            ORDER BY file_path
+            """,
+            (pr_number,),
+        )
+        return [_pull_request_file_from_row(row) for row in rows]
 
     def list_pull_request_review_comments(
         self,
         repository_key: str,
         pr_number: int,
     ) -> list[PullRequestReviewCommentRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT comment_id, pr_number, body, file_path, line,
-                       author_role, created_at, updated_at
-                FROM pull_request_review_comments
-                WHERE repository_id = ? AND pr_number = ?
-                ORDER BY comment_id
-                """,
-                (repository.repository_id, pr_number),
-            ).fetchall()
-        return [
-            PullRequestReviewCommentRecord(
-                comment_id=int(row["comment_id"]),
-                pr_number=int(row["pr_number"]),
-                body=str(row["body"]),
-                file_path=_row_value(row, "file_path"),
-                line=row["line"],
-                author_role=_row_value(row, "author_role"),
-                created_at=_row_value(row, "created_at"),
-                updated_at=_row_value(row, "updated_at"),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT comment_id, pr_number, body, file_path, line,
+                   author_role, created_at, updated_at
+            FROM pull_request_review_comments
+            WHERE repository_id = ? AND pr_number = ?
+            ORDER BY comment_id
+            """,
+            (pr_number,),
+        )
+        return [_pull_request_review_comment_from_row(row) for row in rows]
 
     def list_all_pull_request_review_comments(
         self,
         repository_key: str,
     ) -> list[PullRequestReviewCommentRecord]:
-        repository = self.get_repository(repository_key)
-        if repository is None:
-            return []
-
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT comment_id, pr_number, body, file_path, line,
-                       author_role, created_at, updated_at
-                FROM pull_request_review_comments
-                WHERE repository_id = ?
-                ORDER BY updated_at DESC, comment_id DESC
-                """,
-                (repository.repository_id,),
-            ).fetchall()
-        return [
-            PullRequestReviewCommentRecord(
-                comment_id=int(row["comment_id"]),
-                pr_number=int(row["pr_number"]),
-                body=str(row["body"]),
-                file_path=_row_value(row, "file_path"),
-                line=row["line"],
-                author_role=_row_value(row, "author_role"),
-                created_at=_row_value(row, "created_at"),
-                updated_at=_row_value(row, "updated_at"),
-            )
-            for row in rows
-        ]
+        rows = self._fetch_repository_rows(
+            repository_key,
+            """
+            SELECT comment_id, pr_number, body, file_path, line,
+                   author_role, created_at, updated_at
+            FROM pull_request_review_comments
+            WHERE repository_id = ?
+            ORDER BY updated_at DESC, comment_id DESC
+            """,
+        )
+        return [_pull_request_review_comment_from_row(row) for row in rows]
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -1034,12 +723,132 @@ class HistoryStore:
             return None
         return _repository_from_row(row)
 
+    def _fetch_repository_row(
+        self,
+        repository_key: str,
+        query: str,
+        params: tuple[object, ...] = (),
+    ) -> sqlite3.Row | None:
+        rows = self._fetch_repository_rows(repository_key, query, params)
+        return rows[0] if rows else None
+
+    def _fetch_repository_rows(
+        self,
+        repository_key: str,
+        query: str,
+        params: tuple[object, ...] = (),
+    ) -> list[sqlite3.Row]:
+        repository = self.get_repository(repository_key)
+        if repository is None:
+            return []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                query,
+                (repository.repository_id, *params),
+            ).fetchall()
+        return list(rows)
+
 
 def _repository_from_row(row: sqlite3.Row) -> RepositoryRecord:
     return RepositoryRecord(
         repository_id=int(row["repository_id"]),
         repository_key=str(row["repository_key"]),
         created_at=str(row["created_at"]),
+    )
+
+
+def _sync_state_from_row(repository_key: str, row: sqlite3.Row) -> SyncStateRecord:
+    return SyncStateRecord(
+        repository_key=repository_key,
+        source_name=str(row["source_name"]),
+        cursor=_row_value(row, "cursor"),
+        updated_at=_row_value(row, "updated_at"),
+        metadata_json=_row_value(row, "metadata_json"),
+    )
+
+
+def _sonar_issue_from_row(row: sqlite3.Row) -> SonarIssueRecord:
+    return SonarIssueRecord(
+        issue_key=str(row["issue_key"]),
+        rule=str(row["rule"]),
+        issue_type=str(row["issue_type"]),
+        severity=str(row["severity"]),
+        component=str(row["component"]),
+        message=str(row["message"]),
+        tags_json=_row_value(row, "tags_json"),
+        clean_code_attribute=_row_value(row, "clean_code_attribute"),
+        clean_code_attribute_category=_row_value(row, "clean_code_attribute_category"),
+        status=_row_value(row, "status"),
+        resolution=_row_value(row, "resolution"),
+        created_at=_row_value(row, "created_at"),
+        updated_at=_row_value(row, "updated_at"),
+        branch=_row_value(row, "branch"),
+        line=row["line"],
+        end_line=row["end_line"],
+    )
+
+
+def _sonar_issue_observation_from_row(row: sqlite3.Row) -> SonarIssueObservationRecord:
+    return SonarIssueObservationRecord(
+        issue_key=str(row["issue_key"]),
+        observed_at=str(row["observed_at"]),
+        status=_row_value(row, "status"),
+        resolution=_row_value(row, "resolution"),
+        severity=_row_value(row, "severity"),
+        component=_row_value(row, "component"),
+        branch=_row_value(row, "branch"),
+        message=_row_value(row, "message"),
+    )
+
+
+def _git_commit_from_row(row: sqlite3.Row) -> GitCommitRecord:
+    return GitCommitRecord(
+        commit_sha=str(row["commit_sha"]),
+        authored_at=str(row["authored_at"]),
+        message=str(row["message"]),
+        classification=str(row["classification"]),
+    )
+
+
+def _git_file_touch_from_row(row: sqlite3.Row) -> GitFileTouchRecord:
+    return GitFileTouchRecord(
+        commit_sha=str(row["commit_sha"]),
+        file_path=str(row["file_path"]),
+        module_family=_row_value(row, "module_family"),
+    )
+
+
+def _pull_request_from_row(row: sqlite3.Row) -> PullRequestRecord:
+    return PullRequestRecord(
+        pr_number=int(row["pr_number"]),
+        title=str(row["title"]),
+        body=_row_value(row, "body"),
+        state=_row_value(row, "state"),
+        merged_at=_row_value(row, "merged_at"),
+        updated_at=_row_value(row, "updated_at"),
+    )
+
+
+def _pull_request_file_from_row(row: sqlite3.Row) -> PullRequestFileRecord:
+    return PullRequestFileRecord(
+        pr_number=int(row["pr_number"]),
+        file_path=str(row["file_path"]),
+    )
+
+
+def _pull_request_review_comment_from_row(
+    row: sqlite3.Row,
+) -> PullRequestReviewCommentRecord:
+    return PullRequestReviewCommentRecord(
+        comment_id=int(row["comment_id"]),
+        pr_number=int(row["pr_number"]),
+        body=str(row["body"]),
+        file_path=_row_value(row, "file_path"),
+        line=row["line"],
+        author_role=_row_value(row, "author_role"),
+        created_at=_row_value(row, "created_at"),
+        updated_at=_row_value(row, "updated_at"),
     )
 
 
@@ -1077,57 +886,16 @@ def _ensure_column(
     )
 
 
+def _executemany_if_rows(
+    connection: sqlite3.Connection,
+    query: str,
+    rows: Iterator[tuple[object, ...]],
+) -> None:
+    buffered_rows = list(rows)
+    if not buffered_rows:
+        return
+    connection.executemany(query, buffered_rows)
+
+
 def _utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
-
-
-def _repository_lock_filename(repository_key: str) -> str:
-    digest = hashlib.sha256(repository_key.encode("utf-8")).hexdigest()[:12]
-    slug = repository_key.replace("/", "__").replace(":", "_")
-    return f"{slug}-{digest}.lock"
-
-
-def _thread_lock_for(lock_file: Path) -> threading.Lock:
-    with _THREAD_LOCKS_GUARD:
-        lock = _THREAD_LOCKS.get(lock_file)
-        if lock is None:
-            lock = threading.Lock()
-            _THREAD_LOCKS[lock_file] = lock
-        return lock
-
-
-def _acquire_thread_lock(
-    thread_lock: threading.Lock,
-    *,
-    blocking: bool,
-    timeout_seconds: float | None,
-) -> bool:
-    if not blocking:
-        return thread_lock.acquire(blocking=False)
-    if timeout_seconds is None:
-        thread_lock.acquire()
-        return True
-    return thread_lock.acquire(timeout=timeout_seconds)
-
-
-def _acquire_file_lock(
-    handle: BinaryIO,
-    *,
-    blocking: bool,
-    timeout_seconds: float | None,
-) -> None:
-    if blocking and timeout_seconds is None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        return
-
-    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
-    while True:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except BlockingIOError as exc:
-            if not blocking:
-                raise RepositoryLockError("Repository lock is already held.") from exc
-            if deadline is not None and time.monotonic() >= deadline:
-                raise RepositoryLockError("Timed out while waiting for repository lock.") from exc
-            time.sleep(0.05)

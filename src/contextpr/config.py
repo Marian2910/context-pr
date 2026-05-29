@@ -166,6 +166,8 @@ def _read_path(
         return default
 
     return Path(value).expanduser()
+
+
 def _read_bool(
     environ: Mapping[str, str],
     key: str,

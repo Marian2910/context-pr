@@ -18,10 +18,10 @@ def test_message_service_builds_generic_behavior_sensitive_cleanup_guidance() ->
     next_step = service.build_next_step(issue, "behavior_sensitive_cleanup", None, None)
 
     assert "prefix" not in explanation
-    assert "check" in explanation.lower() or "verify" in explanation.lower()
+    assert explanation == "Lambda captures loop variable."
     assert next_step is not None
     assert "prefix" not in next_step
-    assert "code path" in next_step.lower() or "surrounding code" in next_step.lower()
+    assert next_step == "Review the surrounding code before changing it."
 
 
 def test_message_service_builds_bug_guidance_without_history() -> None:
@@ -38,9 +38,9 @@ def test_message_service_builds_bug_guidance_without_history() -> None:
     explanation = service.build_explanation(issue, "behavior_risk", None, None)
     next_step = service.build_next_step(issue, "behavior_risk", None, None)
 
-    assert "check" in explanation.lower() or "verify" in explanation.lower()
+    assert explanation == "Possible broken logic path."
     assert next_step is not None
-    assert "path" in next_step.lower() or "surrounding code" in next_step.lower()
+    assert next_step == "Review the surrounding code before changing it."
 
 
 def test_message_service_normalizes_code_smell_message() -> None:
@@ -86,7 +86,8 @@ def test_message_service_uses_history_for_non_smell_non_bug_next_step() -> None:
     next_step = service.build_next_step(issue, "general_review", context, "local_sonar")
 
     assert next_step is not None
-    assert "area" in next_step.lower() or "current change" in next_step.lower()
+    assert "small, local fix" in next_step.lower()
+    assert "follow-up" in next_step.lower()
 
 
 def test_message_service_builds_local_persistent_debt_evidence() -> None:
@@ -109,8 +110,31 @@ def test_message_service_builds_local_persistent_debt_evidence() -> None:
     note = service.build_evidence_note(context, "local_sonar")
 
     assert note is not None
-    assert "similar cases of this rule often remained open once introduced" in note
-    assert "follow-up decision" in note
+    assert "this rule has already appeared multiple times in this file and was often left open" in note
+    assert "may not be worth forcing in this PR unless you're already changing the surrounding code" in note
+
+
+def test_message_service_marks_dataset_history_as_cross_repo() -> None:
+    service = DeterministicGuidanceMessageService()
+    context = HistoricalContext(
+        sample_size=6,
+        same_rule_matches=4,
+        same_scope_matches=6,
+        same_path_family_matches=6,
+        same_exact_path_matches=3,
+        strong_match_count=4,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=0.6667,
+        maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
+        resolved_share=0.5,
+    )
+
+    note = service.build_evidence_note(context, "global_dataset")
+
+    assert note is not None
+    assert "In similar issues from other repositories" in note
+    assert "In this repository" not in note
+    assert "similar files" in note
 
 
 def test_message_service_builds_local_persistent_debt_evidence_with_fix_reference() -> None:
@@ -148,31 +172,131 @@ def test_message_service_builds_local_persistent_debt_evidence_with_fix_referenc
     note = service.build_evidence_note(context, "local_sonar")
 
     assert note is not None
-    assert "similar cases of this rule often remained open once introduced" in note
-    assert "follow-up decision" in note
+    assert "this rule has already appeared multiple times in this file and was often left open" in note
+    assert "may not be worth forcing in this PR unless you're already changing the surrounding code" in note
     assert "A similar fixed case is linked to [PR #9]" in note
+    assert "Why this match is shown:" in note
+    assert "- same Sonar rule `python:S1192`" in note
+    assert "- same file `httpie/internal/sonar_history_examples.py`" in note
+    assert "Previous fix:" in note
+    assert "https://github.com/marian2910/httpie/pull/9/files" in note
 
-
-def test_message_service_builds_global_split_distribution_evidence() -> None:
+def test_message_service_keeps_caution_when_behavior_history_is_exemplar_only() -> None:
     service = DeterministicGuidanceMessageService()
+    issue = SonarIssue(
+        key="loop-capture-exemplar",
+        rule="python:S1515",
+        severity="MAJOR",
+        message="Lambda captures loop variable",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
     context = HistoricalContext(
-        sample_size=6,
-        same_rule_matches=3,
-        same_scope_matches=6,
-        same_path_family_matches=6,
-        same_exact_path_matches=2,
-        strong_match_count=4,
-        dominant_maintenance="behavior",
-        dominant_maintenance_share=0.5,
-        maintenance_distribution=(("behavior", 3), ("cleanup", 2), ("supporting", 1)),
+        sample_size=1,
+        same_rule_matches=1,
+        same_scope_matches=1,
+        same_path_family_matches=1,
+        strong_match_count=1,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=1.0,
+        maintenance_distribution=(("cleanup", 1),),
+        fix_references=(
+            HistoricalFixReference(
+                pr_number=123,
+                pr_title="Example historical fix",
+                pr_url="https://github.com/org/repo/pull/123",
+                file_url="https://github.com/org/repo/pull/123/files",
+                confidence=0.84,
+                evidence=("same Sonar rule",),
+                file_path="src/app.py",
+                resolved_at="2026-05-20T10:00:00Z",
+            ),
+        ),
     )
 
-    note = service.build_evidence_note(context, "global_dataset")
+    note = service.build_evidence_note(
+        issue,
+        "inspect_before_changing",
+        None,
+        context,
+        "local_sonar",
+    )
 
     assert note is not None
-    assert "historical matches" in note.lower()
-    assert "behavior-preserving edits" in note or "split between" in note
-    assert "\n\nCheck the current code path before simplifying this." in note
+    assert "Review the surrounding code before changing it." in note
+    assert "A similar fixed case is linked to [PR #123](https://github.com/org/repo/pull/123)" in note
+
+
+def test_message_service_distinguishes_recurrence_with_some_past_resolutions() -> None:
+    service = DeterministicGuidanceMessageService()
+    issue = SonarIssue(
+        key="recurring-addressed",
+        rule="python:S3923",
+        severity="MAJOR",
+        message="Remove this if statement or edit its code blocks so that they're not all the same.",
+        location=IssueLocation(path="src/app.py", line=14),
+        issue_type="CODE_SMELL",
+    )
+    context = HistoricalContext(
+        sample_size=4,
+        same_rule_matches=4,
+        same_scope_matches=4,
+        same_path_family_matches=4,
+        same_exact_path_matches=2,
+        strong_match_count=4,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=0.5,
+        maintenance_distribution=(("cleanup", 2), ("behavior", 2)),
+        resolved_share=0.5,
+    )
+
+    note = service.build_evidence_note(
+        issue,
+        "recurs_here",
+        None,
+        context,
+        "local_sonar",
+    )
+
+    assert note is not None
+    assert "appeared multiple times in this file before, and some past cases were addressed" in note
+    assert "repeated local issue" in note.lower()
+
+
+def test_message_service_distinguishes_recurrence_without_past_fix_evidence() -> None:
+    service = DeterministicGuidanceMessageService()
+    issue = SonarIssue(
+        key="recurring-unresolved",
+        rule="python:S3923",
+        severity="MAJOR",
+        message="Remove this if statement or edit its code blocks so that they're not all the same.",
+        location=IssueLocation(path="src/app.py", line=14),
+        issue_type="CODE_SMELL",
+    )
+    context = HistoricalContext(
+        sample_size=4,
+        same_rule_matches=4,
+        same_scope_matches=4,
+        same_path_family_matches=4,
+        same_exact_path_matches=2,
+        strong_match_count=4,
+        dominant_maintenance="cleanup",
+        dominant_maintenance_share=0.5,
+        maintenance_distribution=(("cleanup", 2), ("behavior", 2)),
+        resolved_share=0.0,
+    )
+
+    note = service.build_evidence_note(
+        issue,
+        "recurs_here",
+        None,
+        context,
+        "local_sonar",
+    )
+
+    assert note is not None
+    assert "this issue has appeared multiple times in this file before but was not addressed" in note.lower()
+    assert "repeated local issue" in note.lower()
 
 
 def test_message_service_returns_none_without_context() -> None:
