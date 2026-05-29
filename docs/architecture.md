@@ -44,8 +44,8 @@ The orchestration flow is:
    SQLite store.
 4. Retrieve changed pull request lines from GitHub.
 5. Keep only Sonar issues that can be attached to newly changed lines.
-6. Look up historical context from the curated issue dataset and, when enabled, the local
-   repository history store.
+6. Look up historical context from the local repository history store first and fall back to the
+   curated issue dataset only when repository history is unavailable or too sparse.
 7. Decide whether the issue should receive no, minimal, contextual, or detailed enrichment.
 8. Compose concise review comments.
 9. Post or preview inline GitHub review comments.
@@ -90,10 +90,10 @@ In practice this usually means:
 
 ## Historical context
 
-ContextPR uses two history sources:
+ContextPR uses two history sources, with a clear preference order:
 
-- the curated dataset used for broader offline similarity experiments
 - the local repository history store populated through `contextpr sync-history`
+- the curated dataset used as a cold-start fallback when local history is not yet useful
 
 Local repository history can include:
 
@@ -101,6 +101,15 @@ Local repository history can include:
 - repository commit/file-touch history
 - merged pull request/file history
 - historical GitHub review comments
+
+The dataset fallback is intentionally narrower in product meaning:
+
+- it helps ContextPR say something sensible for fresh repositories
+- it does not justify `In this repository ...` wording
+- it is best treated as comparative background rather than project-specific evidence
+
+In other words, local history is the primary evidence source, and the dataset is a fallback for
+early-stage or low-history repositories.
 
 Historical retrieval scores previous issues using rule, type, clean-code metadata, severity,
 file extension, tags, and message overlap. Historical notes are shown only when the evidence is
@@ -119,6 +128,22 @@ When local Sonar history contains a resolved issue that can be attributed to a m
 ContextPR can also attach a historical PR reference. That path is intentionally stricter than
 generic similarity notes: it requires merged PR evidence and touched-file support before a link is
 shown in the final GitHub comment.
+
+## Dataset artifact
+
+The curated dataset is optional.
+
+- It is not required when ContextPR is used with repository-local history.
+- It is required only if you want the cross-repository fallback behavior.
+
+By default, the configuration points to:
+
+```text
+dataset/curated_issues_data.xlsx
+```
+
+In this repository, `dataset/` is git-ignored, so the dataset is treated as a local experimental
+artifact rather than a checked-in project asset.
 
 ## Reusable action packaging
 

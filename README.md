@@ -25,7 +25,7 @@ The current analysis pipeline is:
 1. Load runtime configuration.
 2. Read Sonar pull request analysis results.
 3. Optionally synchronize local Sonar, Git, and GitHub history into a SQLite store.
-4. Enrich issues with repository and historical context.
+4. Enrich issues with repository-local history when available, or fall back to the curated dataset when the repository has little or no history.
 5. Generate review-ready comment text.
 6. Post inline GitHub pull request comments.
 
@@ -111,6 +111,52 @@ contextpr sync-history
 When local history is enabled, `contextpr analyze` also refreshes history before composing PR
 comments.
 
+The local runtime folder:
+
+```bash
+~/.contextpr/
+```
+
+is operational state only. It holds the SQLite history database and should not be committed to
+git.
+
+## Dataset fallback mode
+
+ContextPR can also use a curated cross-repository dataset as a fallback when a repository is too
+new to have useful local history yet.
+
+This fallback is intended for cold-start situations:
+
+- when local history is disabled
+- when local history is enabled but still sparse
+- when you want broader comparison examples during early experiments
+
+Dataset-backed comments are worded differently on purpose. They do not claim repository-specific
+evidence, and use phrasing such as:
+
+- `In similar issues from other repositories ...`
+
+instead of:
+
+- `In this repository ...`
+
+### Dataset requirement
+
+The dataset is optional, not required for the main local-history workflow.
+
+- If you want only repository-local enrichment, you do not need to provide the dataset file.
+- If you want cold-start fallback behavior, provide a dataset file through
+  `CONTEXTPR_ISSUE_DATASET_PATH`.
+
+The default configured path is:
+
+```bash
+dataset/curated_issues_data.xlsx
+```
+
+The `dataset/` directory is ignored by git in this repository, so the file is expected to be
+provided locally for experiments rather than stored in version control.
+
 ## Comment style
 
 ContextPR does not add text to every Sonar issue. It tries to stay out of the way when Sonar
@@ -120,7 +166,7 @@ Depending on the issue and the available history, comments may include:
 
 - the original Sonar message as the opening sentence
 - a short follow-up recommendation such as "This looks like a reasonable fix to keep in this PR."
-- a historical note about how similar issues were usually handled in this repository
+- a historical note about how similar issues were usually handled in this repository, or in other repositories when the dataset fallback is used
 - a linked historical PR when ContextPR can connect a fixed Sonar issue to merged PR file evidence
 
 Rendered comments are intentionally split into short paragraphs to make the guidance easier to
