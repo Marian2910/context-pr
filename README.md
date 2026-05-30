@@ -192,10 +192,22 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: write
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Ensure ContextPR state directory exists
+        run: mkdir -p .contextpr
+
+      - name: Restore ContextPR history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .contextpr/history.db
+          key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
+          restore-keys: |
+            contextpr-history-${{ github.repository }}-v1-
 
       - name: Run ContextPR
         uses: Marian2910/context-pr@main
@@ -206,9 +218,45 @@ jobs:
           sonar-project-key: your-project-key
           pr-number: ${{ github.event.pull_request.number }}
           github-repository: ${{ github.repository }}
-          dry-run: "true"
+          dry-run: "false"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          CONTEXTPR_ENABLE_LOCAL_HISTORY: "true"
+          CONTEXTPR_LOCAL_HISTORY_DB_PATH: ${{ github.workspace }}/.contextpr/history.db
+
+      - name: Save updated ContextPR history cache
+        if: always() && hashFiles('.contextpr/history.db') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .contextpr/history.db
+          key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
+
+      - name: Delete older ContextPR caches but keep latest 3
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PREFIX: contextpr-history-${{ github.repository }}-v1-
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPO/actions/caches?per_page=100" > caches.json
+
+          jq -r --arg prefix "$PREFIX" '
+            .actions_caches
+            | map(select(.key | startswith($prefix)))
+            | sort_by(.last_accessed_at)
+            | reverse
+            | .[3:]
+            | .[].id
+          ' caches.json | while read -r cache_id; do
+            if [ -n "$cache_id" ]; then
+              gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$REPO/actions/caches/$cache_id"
+            fi
+          done
 ```
 
 The Action wraps `contextpr analyze`. As the Python implementation grows, the GitHub Action
@@ -216,6 +264,16 @@ automatically benefits from the same logic because it simply delegates to the pa
 
 For GitHub access, the Action uses the workflow token (`github.token`). Consumers only need
 to configure Sonar credentials. Review comments will appear from `github-actions[bot]`.
+
+The example above treats the SQLite history database as a rolling cache:
+
+- each run restores the latest available `history.db`
+- ContextPR performs an incremental sync against Sonar and GitHub
+- the updated database is saved under a new immutable cache key
+- older cache entries are deleted, keeping only the latest three
+
+This keeps local-history mode fast without treating the cache as the source of truth. The
+authoritative systems remain Sonar and GitHub, and the SQLite database can always be rebuilt.
 
 ## Development workflow
 

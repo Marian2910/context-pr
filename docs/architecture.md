@@ -111,6 +111,12 @@ The dataset fallback is intentionally narrower in product meaning:
 In other words, local history is the primary evidence source, and the dataset is a fallback for
 early-stage or low-history repositories.
 
+In GitHub Actions deployments, the SQLite history database can be treated as a rolling cache
+rather than a permanent store. A workflow can restore the latest cached `history.db`, run an
+incremental sync, save a new immutable cache entry, and then delete older cache versions. This
+keeps repeated pull request analyses fast while preserving the design assumption that the
+authoritative systems are still Sonar and GitHub.
+
 Historical retrieval scores previous issues using rule, type, clean-code metadata, severity,
 file extension, tags, and message overlap. Historical notes are shown only when the evidence is
 grounded enough:
