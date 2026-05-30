@@ -1,22 +1,49 @@
 #!/bin/sh
 set -eu
 
-export CONTEXTPR_GITHUB_TOKEN="${INPUT_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
-export CONTEXTPR_GITHUB_API_URL="${INPUT_GITHUB_API_URL:-https://api.github.com}"
-export CONTEXTPR_GITHUB_REPOSITORY="${INPUT_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
-export CONTEXTPR_SONAR_TOKEN="${INPUT_SONAR_TOKEN:-}"
-export CONTEXTPR_SONAR_HOST_URL="${INPUT_SONAR_HOST_URL:-https://sonarcloud.io}"
-export CONTEXTPR_SONAR_ORGANIZATION="${INPUT_SONAR_ORGANIZATION:-}"
-export CONTEXTPR_SONAR_PROJECT_KEY="${INPUT_SONAR_PROJECT_KEY:-}"
-export CONTEXTPR_LOG_LEVEL="${INPUT_LOG_LEVEL:-INFO}"
+input_value() {
+  underscored_name="$1"
+  hyphenated_name="$2"
+  default_value="${3:-}"
+
+  value="$(printenv "$underscored_name" 2>/dev/null || true)"
+  if [ -z "$value" ]; then
+    value="$(printenv "$hyphenated_name" 2>/dev/null || true)"
+  fi
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return
+  fi
+  printf '%s' "$default_value"
+}
+
+INPUT_GITHUB_TOKEN_VALUE="$(input_value INPUT_GITHUB_TOKEN INPUT_GITHUB-TOKEN "${GITHUB_TOKEN:-}")"
+INPUT_GITHUB_API_URL_VALUE="$(input_value INPUT_GITHUB_API_URL INPUT_GITHUB-API-URL "https://api.github.com")"
+INPUT_GITHUB_REPOSITORY_VALUE="$(input_value INPUT_GITHUB_REPOSITORY INPUT_GITHUB-REPOSITORY "${GITHUB_REPOSITORY:-}")"
+INPUT_SONAR_TOKEN_VALUE="$(input_value INPUT_SONAR_TOKEN INPUT_SONAR-TOKEN)"
+INPUT_SONAR_HOST_URL_VALUE="$(input_value INPUT_SONAR_HOST_URL INPUT_SONAR-HOST-URL "https://sonarcloud.io")"
+INPUT_SONAR_ORGANIZATION_VALUE="$(input_value INPUT_SONAR_ORGANIZATION INPUT_SONAR-ORGANIZATION)"
+INPUT_SONAR_PROJECT_KEY_VALUE="$(input_value INPUT_SONAR_PROJECT_KEY INPUT_SONAR-PROJECT-KEY)"
+INPUT_LOG_LEVEL_VALUE="$(input_value INPUT_LOG_LEVEL INPUT_LOG-LEVEL "INFO")"
+INPUT_PR_NUMBER_VALUE="$(input_value INPUT_PR_NUMBER INPUT_PR-NUMBER)"
+INPUT_DRY_RUN_VALUE="$(input_value INPUT_DRY_RUN INPUT_DRY-RUN "true")"
+
+export CONTEXTPR_GITHUB_TOKEN="$INPUT_GITHUB_TOKEN_VALUE"
+export CONTEXTPR_GITHUB_API_URL="$INPUT_GITHUB_API_URL_VALUE"
+export CONTEXTPR_GITHUB_REPOSITORY="$INPUT_GITHUB_REPOSITORY_VALUE"
+export CONTEXTPR_SONAR_TOKEN="$INPUT_SONAR_TOKEN_VALUE"
+export CONTEXTPR_SONAR_HOST_URL="$INPUT_SONAR_HOST_URL_VALUE"
+export CONTEXTPR_SONAR_ORGANIZATION="$INPUT_SONAR_ORGANIZATION_VALUE"
+export CONTEXTPR_SONAR_PROJECT_KEY="$INPUT_SONAR_PROJECT_KEY_VALUE"
+export CONTEXTPR_LOG_LEVEL="$INPUT_LOG_LEVEL_VALUE"
 
 set -- contextpr analyze
 
-if [ -n "${INPUT_PR_NUMBER:-}" ]; then
-  set -- "$@" --pr-number "${INPUT_PR_NUMBER}"
+if [ -n "$INPUT_PR_NUMBER_VALUE" ]; then
+  set -- "$@" --pr-number "$INPUT_PR_NUMBER_VALUE"
 fi
 
-case "${INPUT_DRY_RUN:-true}" in
+case "$INPUT_DRY_RUN_VALUE" in
   true|TRUE|True|1|yes|YES|Yes)
     set -- "$@" --dry-run
     ;;
@@ -24,7 +51,7 @@ case "${INPUT_DRY_RUN:-true}" in
     set -- "$@" --no-dry-run
     ;;
   *)
-    echo "Invalid dry-run value: ${INPUT_DRY_RUN:-}" >&2
+    echo "Invalid dry-run value: $INPUT_DRY_RUN_VALUE" >&2
     exit 2
     ;;
 esac
