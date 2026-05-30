@@ -16,6 +16,4 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install . \
     && chown -R contextpr:contextpr /app /action-entrypoint.sh
 
-USER contextpr
-
 ENTRYPOINT ["/action-entrypoint.sh"]
