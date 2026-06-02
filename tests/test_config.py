@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from contextpr.config import ConfigurationError, Settings
@@ -93,3 +96,35 @@ def test_local_history_db_path_uses_env_override() -> None:
 def test_invalid_local_history_flag_raises_configuration_error() -> None:
     with pytest.raises(ConfigurationError, match="Invalid boolean value"):
         Settings.from_env({"CONTEXTPR_ENABLE_LOCAL_HISTORY": "sometimes"})
+
+
+def test_settings_read_repo_local_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    state_dir = repo / ".context-pr"
+    state_dir.mkdir()
+    (state_dir / "config.toml").write_text(
+        "\n".join(
+            (
+                'github_repository = "octo/example"',
+                'sonar_project_key = "contextpr"',
+                'sonar_organization = "platform"',
+                "local_history_enabled = true",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    settings = Settings.from_env({})
+
+    assert settings.github_repository == "octo/example"
+    assert settings.sonar_project_key == "contextpr"
+    assert settings.sonar_organization == "platform"
+    assert settings.local_history_enabled is True
+    assert settings.local_history_db_path == repo / ".context-pr" / "history.db"

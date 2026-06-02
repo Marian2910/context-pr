@@ -1,5 +1,7 @@
-import pytest
+import subprocess
 from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
 from contextpr.cli import app
@@ -51,6 +53,24 @@ def test_analyze_command_reports_run_summary(
     assert "posted 0." in result.stdout
 
 
+def test_analyze_pr_command_reports_run_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.GitHubClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+    monkeypatch.setattr(
+        "contextpr.cli.Settings.from_env",
+        lambda *_args, **_kwargs: _settings_env(),
+    )
+
+    result = runner.invoke(app, ["analyze", "pr", "123", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "ContextPR analyzed PR #123" in result.stdout
+
+
 def _settings_env(**overrides: object) -> object:
     return Settings(
         github_app_id="12345",
@@ -89,7 +109,12 @@ def test_analyze_syncs_local_history_when_enabled(
     sync_calls: list[str] = []
 
     class FakeSonarClient:
-        def sync_project_issue_history(self, *, store: object, repository_key: str) -> SonarProjectHistorySyncResult:
+        def sync_project_issue_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> SonarProjectHistorySyncResult:
             sync_calls.append(repository_key)
             return SonarProjectHistorySyncResult(
                 repository_key=repository_key,
@@ -104,7 +129,12 @@ def test_analyze_syncs_local_history_when_enabled(
         def __init__(self, settings: object) -> None:
             self.settings = settings
 
-        def sync_commit_history(self, *, store: object, repository_key: str) -> GitHubCommitHistorySyncResult:
+        def sync_commit_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubCommitHistorySyncResult:
             sync_calls.append(f"git:{repository_key}")
             return GitHubCommitHistorySyncResult(
                 repository_key=repository_key,
@@ -116,7 +146,12 @@ def test_analyze_syncs_local_history_when_enabled(
                 latest_authored_at="2026-05-16T09:00:00+00:00",
             )
 
-        def sync_repository_history(self, *, store: object, repository_key: str) -> GitHubHistorySyncResult:
+        def sync_repository_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubHistorySyncResult:
             sync_calls.append(f"github:{repository_key}")
             return GitHubHistorySyncResult(
                 repository_key=repository_key,
@@ -153,7 +188,12 @@ def test_sync_history_command_runs_all_local_syncers(
     sync_calls: list[str] = []
 
     class FakeSonarClient:
-        def sync_project_issue_history(self, *, store: object, repository_key: str) -> SonarProjectHistorySyncResult:
+        def sync_project_issue_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> SonarProjectHistorySyncResult:
             sync_calls.append("sonar")
             return SonarProjectHistorySyncResult(
                 repository_key=repository_key,
@@ -168,7 +208,12 @@ def test_sync_history_command_runs_all_local_syncers(
         def __init__(self, settings: object) -> None:
             self.settings = settings
 
-        def sync_commit_history(self, *, store: object, repository_key: str) -> GitHubCommitHistorySyncResult:
+        def sync_commit_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubCommitHistorySyncResult:
             sync_calls.append("git")
             return GitHubCommitHistorySyncResult(
                 repository_key=repository_key,
@@ -180,7 +225,12 @@ def test_sync_history_command_runs_all_local_syncers(
                 latest_authored_at="2026-05-16T09:00:00+00:00",
             )
 
-        def sync_repository_history(self, *, store: object, repository_key: str) -> GitHubHistorySyncResult:
+        def sync_repository_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubHistorySyncResult:
             sync_calls.append("github")
             return GitHubHistorySyncResult(
                 repository_key=repository_key,
@@ -207,3 +257,144 @@ def test_sync_history_command_runs_all_local_syncers(
     assert result.exit_code == 0
     assert sync_calls == ["sonar", "git", "github"]
     assert "synchronized local history for octo/example" in result.output.lower()
+
+
+def test_sync_alias_runs_all_local_syncers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sync_calls: list[str] = []
+
+    class FakeSonarClient:
+        def sync_project_issue_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> SonarProjectHistorySyncResult:
+            sync_calls.append("sonar")
+            return SonarProjectHistorySyncResult(
+                repository_key=repository_key,
+                pages_fetched=1,
+                issues_seen=1,
+                issues_upserted=1,
+                observations_recorded=1,
+                latest_update="2026-05-16T10:00:00+00:00",
+            )
+
+    class FakeGitHubClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
+
+        def sync_commit_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubCommitHistorySyncResult:
+            sync_calls.append("git")
+            return GitHubCommitHistorySyncResult(
+                repository_key=repository_key,
+                pages_fetched=1,
+                commits_seen=1,
+                commits_upserted=1,
+                touches_recorded=1,
+                latest_commit_sha="abc123",
+                latest_authored_at="2026-05-16T09:00:00+00:00",
+            )
+
+        def sync_repository_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> GitHubHistorySyncResult:
+            sync_calls.append("github")
+            return GitHubHistorySyncResult(
+                repository_key=repository_key,
+                pages_fetched=1,
+                pull_requests_seen=1,
+                pull_requests_upserted=1,
+                files_recorded=1,
+                review_comments_recorded=1,
+                latest_update="2026-05-16T10:30:00+00:00",
+            )
+
+    monkeypatch.setattr(
+        "contextpr.cli.Settings.from_env",
+        lambda *_args, **_kwargs: _settings_env(
+            local_history_enabled=True,
+            local_history_db_path=tmp_path / "cli-history.db",
+        ),
+    )
+    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
+
+    result = runner.invoke(app, ["sync"])
+
+    assert result.exit_code == 0
+    assert sync_calls == ["sonar", "git", "github"]
+
+
+def test_init_creates_repo_state_gitignore_hook_and_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    (repo / ".env").write_text("# Existing app config\nEXISTING=value\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(
+        app,
+        ["init"],
+        input="github-token\nsonar-token\nocto/example\ncontextpr\nplatform\n",
+    )
+
+    assert result.exit_code == 0
+    assert (repo / ".context-pr" / "config.toml").is_file()
+    assert ".context-pr/" in (repo / ".gitignore").read_text(encoding="utf-8")
+    assert ".env" in (repo / ".gitignore").read_text(encoding="utf-8")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    assert "ContextPR refuses to commit local state or secrets" in hook.read_text(
+        encoding="utf-8"
+    )
+    env = (repo / ".env").read_text(encoding="utf-8")
+    assert "# Existing app config" in env
+    assert "EXISTING=value" in env
+    assert "CONTEXTPR_GITHUB_TOKEN=github-token" in env
+    assert "CONTEXTPR_SONAR_TOKEN=sonar-token" in env
+    assert "CONTEXTPR_LOCAL_HISTORY_DB_PATH=" in env
+
+
+def test_guard_passes_when_local_paths_are_not_tracked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["guard"])
+
+    assert result.exit_code == 0
+    assert "guard passed" in result.output
+
+
+def test_guard_fails_when_local_paths_are_tracked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    (repo / ".env").write_text("CONTEXTPR_GITHUB_TOKEN=secret\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".env"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["guard"])
+
+    assert result.exit_code != 0
+    assert ".env" in result.output

@@ -30,6 +30,7 @@ dev = [
 
 [project.scripts]
 contextpr = "contextpr.cli:run"
+context-pr = "contextpr.cli:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/contextpr"]

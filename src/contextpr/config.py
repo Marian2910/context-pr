@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -15,6 +16,8 @@ DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH = Path("secrets/GITHUB_APP_PRIVATE_KEY.pem")
 DEFAULT_ISSUE_DATASET_PATH = Path("dataset/curated_issues_data.xlsx")
 DEFAULT_LOCAL_HISTORY_DB_PATH = Path.home() / ".contextpr" / "history.db"
+REPO_STATE_DIR_NAME = ".context-pr"
+REPO_CONFIG_FILE_NAME = "config.toml"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOCAL_HISTORY_ENABLED = False
 DEFAULT_SONAR_HOST_URL = "https://sonarcloud.io"
@@ -44,6 +47,7 @@ class Settings:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Self:
         env = os.environ if environ is None else environ
+        local_config = _read_local_config()
         return cls(
             github_token=(
                 _read_optional(env, "CONTEXTPR_GITHUB_TOKEN")
@@ -58,16 +62,32 @@ class Settings:
                 default=DEFAULT_GITHUB_API_URL,
             )
             or DEFAULT_GITHUB_API_URL,
-            github_repository=_read_optional(env, "CONTEXTPR_GITHUB_REPOSITORY"),
+            github_repository=_read_optional(
+                env,
+                "CONTEXTPR_GITHUB_REPOSITORY",
+                default=_read_config_string(local_config, "github_repository"),
+            ),
             sonar_token=_read_optional(env, "CONTEXTPR_SONAR_TOKEN"),
             sonar_host_url=_read_optional(
                 env,
                 "CONTEXTPR_SONAR_HOST_URL",
-                default=DEFAULT_SONAR_HOST_URL,
+                default=_read_config_string(
+                    local_config,
+                    "sonar_host_url",
+                    default=DEFAULT_SONAR_HOST_URL,
+                ),
             )
             or DEFAULT_SONAR_HOST_URL,
-            sonar_organization=_read_optional(env, "CONTEXTPR_SONAR_ORGANIZATION"),
-            sonar_project_key=_read_optional(env, "CONTEXTPR_SONAR_PROJECT_KEY"),
+            sonar_organization=_read_optional(
+                env,
+                "CONTEXTPR_SONAR_ORGANIZATION",
+                default=_read_config_string(local_config, "sonar_organization"),
+            ),
+            sonar_project_key=_read_optional(
+                env,
+                "CONTEXTPR_SONAR_PROJECT_KEY",
+                default=_read_config_string(local_config, "sonar_project_key"),
+            ),
             issue_dataset_path=_read_path(
                 env,
                 "CONTEXTPR_ISSUE_DATASET_PATH",
@@ -76,12 +96,16 @@ class Settings:
             local_history_db_path=_read_path(
                 env,
                 "CONTEXTPR_LOCAL_HISTORY_DB_PATH",
-                default=DEFAULT_LOCAL_HISTORY_DB_PATH,
+                default=default_local_history_db_path(),
             ),
             local_history_enabled=_read_bool(
                 env,
                 "CONTEXTPR_ENABLE_LOCAL_HISTORY",
-                default=DEFAULT_LOCAL_HISTORY_ENABLED,
+                default=_read_config_bool(
+                    local_config,
+                    "local_history_enabled",
+                    default=DEFAULT_LOCAL_HISTORY_ENABLED,
+                ),
             ),
             log_level=(
                 _read_optional(env, "CONTEXTPR_LOG_LEVEL", default=DEFAULT_LOG_LEVEL)
@@ -147,12 +171,69 @@ def _read_optional(
 
 
 def _read_github_private_key() -> str | None:
-    key_path = Path.cwd() / DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH
+    key_path = _working_tree_root() / DEFAULT_GITHUB_APP_PRIVATE_KEY_PATH
     if not key_path.is_file():
         return None
 
     value = key_path.read_text(encoding="utf-8").strip()
     return value or None
+
+
+def default_local_history_db_path() -> Path:
+    root = _find_git_root(Path.cwd())
+    if root is None:
+        return DEFAULT_LOCAL_HISTORY_DB_PATH
+    return root / REPO_STATE_DIR_NAME / "history.db"
+
+
+def _working_tree_root() -> Path:
+    return _find_git_root(Path.cwd()) or Path.cwd()
+
+
+def _find_git_root(start: Path) -> Path | None:
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _read_local_config() -> Mapping[str, object]:
+    config_path = _working_tree_root() / REPO_STATE_DIR_NAME / REPO_CONFIG_FILE_NAME
+    if not config_path.is_file():
+        return {}
+    with config_path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return data if isinstance(data, dict) else {}
+
+
+def _read_config_string(
+    config: Mapping[str, object],
+    key: str,
+    *,
+    default: str | None = None,
+) -> str | None:
+    value = config.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ConfigurationError(f"Invalid string value for {REPO_STATE_DIR_NAME}/{key}.")
+    normalized = value.strip()
+    return normalized or default
+
+
+def _read_config_bool(
+    config: Mapping[str, object],
+    key: str,
+    *,
+    default: bool,
+) -> bool:
+    value = config.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"Invalid boolean value for {REPO_STATE_DIR_NAME}/{key}.")
+    return value
 
 
 def _read_path(

@@ -32,6 +32,7 @@ The current analysis pipeline is:
 The same Python package can be used in two ways:
 
 - as a local CLI for development and debugging
+- as an installable repository add-on with repo-local state
 - as a Docker-based GitHub Action that other repositories can call with `uses:`
 
 ## Getting started
@@ -72,13 +73,64 @@ Run the CLI:
 ```bash
 contextpr --help
 contextpr analyze --pr-number 123 --dry-run
+contextpr analyze pr 123 --dry-run
 contextpr sync-history
+contextpr sync
 ```
 
 You can also invoke the package directly:
 
 ```bash
 python -m contextpr --help
+```
+
+## Installing ContextPR into another repository
+
+ContextPR can be installed as a short CLI command and initialized inside any git repository:
+
+```bash
+pipx install git+https://github.com/Marian2910/context-pr.git
+
+cd path/to/your/repository
+context-pr init
+context-pr sync
+context-pr analyze pr 3 --no-dry-run
+```
+
+`context-pr init` creates repo-local operational state:
+
+```bash
+.context-pr/
+  config.toml
+  history.db
+```
+
+It also prompts for GitHub and Sonar credentials and writes them to `.env`. If `.env` already
+exists, ContextPR updates it in place and preserves existing variables.
+
+The setup command automatically adds the local state and secret file to `.gitignore`:
+
+```gitignore
+.context-pr/
+.env
+```
+
+It also installs a local pre-commit guard that blocks accidental commits containing `.context-pr/`
+or `.env`.
+
+Local hooks can be bypassed with `--no-verify`, so use the CLI guard in CI when you want a hard
+repository policy:
+
+```yaml
+- name: Prevent ContextPR local state from being committed
+  run: context-pr guard
+```
+
+`context-pr guard` fails if `.context-pr/` or `.env` is already tracked by git. If that happens,
+remove the files from the index without deleting your local copies:
+
+```bash
+git rm -r --cached .context-pr .env
 ```
 
 ## Local history mode
@@ -99,13 +151,13 @@ export CONTEXTPR_ENABLE_LOCAL_HISTORY=true
 By default, local history is stored in:
 
 ```bash
-~/.contextpr/history.db
+.context-pr/history.db
 ```
 
 To populate or refresh that store explicitly:
 
 ```bash
-contextpr sync-history
+contextpr sync
 ```
 
 When local history is enabled, `contextpr analyze` also refreshes history before composing PR
@@ -114,7 +166,7 @@ comments.
 The local runtime folder:
 
 ```bash
-~/.contextpr/
+.context-pr/
 ```
 
 is operational state only. It holds the SQLite history database and should not be committed to
@@ -199,36 +251,38 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Ensure ContextPR state directory exists
-        run: mkdir -p .contextpr
+        run: mkdir -p .context-pr
 
       - name: Restore ContextPR history cache
         uses: actions/cache/restore@v4
         with:
-          path: .contextpr/history.db
+          path: .context-pr/history.db
           key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
           restore-keys: |
             contextpr-history-${{ github.repository }}-v1-
 
       - name: Run ContextPR
         uses: Marian2910/context-pr@main
-        with:
-          sonar-token: ${{ secrets.SONAR_TOKEN }}
-          sonar-host-url: https://sonarcloud.io
-          sonar-organization: your-organization
-          sonar-project-key: your-project-key
-          pr-number: ${{ github.event.pull_request.number }}
-          github-repository: ${{ github.repository }}
-          dry-run: "false"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
           CONTEXTPR_ENABLE_LOCAL_HISTORY: "true"
-          CONTEXTPR_LOCAL_HISTORY_DB_PATH: ${{ github.workspace }}/.contextpr/history.db
+          CONTEXTPR_LOCAL_HISTORY_DB_PATH: ${{ github.workspace }}/.context-pr/history.db
+
+          CONTEXTPR_SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          CONTEXTPR_SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
+          CONTEXTPR_SONAR_PROJECT_KEY: ${{ secrets.PROJECT_KEY }}
+          CONTEXTPR_SONAR_HOST_URL: https://sonarcloud.io
+
+          CONTEXTPR_GITHUB_REPOSITORY: ${{ github.repository }}
+          CONTEXTPR_PR_NUMBER: ${{ github.event.pull_request.number }}
+          CONTEXTPR_DRY_RUN: "false"
 
       - name: Save updated ContextPR history cache
-        if: always() && hashFiles('.contextpr/history.db') != ''
+        if: always() && hashFiles('.context-pr/history.db') != ''
         uses: actions/cache/save@v4
         with:
-          path: .contextpr/history.db
+          path: .context-pr/history.db
           key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
 
       - name: Delete older ContextPR caches but keep latest 3
