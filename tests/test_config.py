@@ -22,6 +22,7 @@ def test_settings_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch
             "CONTEXTPR_SONAR_HOST_URL": "https://sonarqube.example",
             "CONTEXTPR_SONAR_ORGANIZATION": "platform",
             "CONTEXTPR_SONAR_PROJECT_KEY": "contextpr",
+            "CONTEXTPR_ENABLE_LOCAL_HISTORY": "false",
             "CONTEXTPR_LOG_LEVEL": "debug",
         }
     )

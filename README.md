@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/contextpr-logo.png" alt="ContextPR logo" width="180">
+</p>
+
 # ContextPR
 
 ContextPR is a Python tool for enriching SonarQube or SonarCloud pull request findings
@@ -105,18 +109,25 @@ context-pr analyze pr 3 --no-dry-run
   history.db
 ```
 
-It also prompts for GitHub and Sonar credentials and writes them to `.env`. If `.env` already
-exists, ContextPR updates it in place and preserves existing variables.
+It also prompts for GitHub App credentials and Sonar credentials. The GitHub App ID,
+installation ID, repository, and Sonar settings are written to `.env`. If `.env` already exists,
+ContextPR updates it in place and preserves existing variables. The GitHub App private key is
+copied into:
+
+```bash
+secrets/GITHUB_APP_PRIVATE_KEY.pem
+```
 
 The setup command automatically adds the local state and secret file to `.gitignore`:
 
 ```gitignore
 .context-pr/
 .env
+secrets/
 ```
 
-It also installs a local pre-commit guard that blocks accidental commits containing `.context-pr/`
-or `.env`.
+It also installs a local pre-commit guard that blocks accidental commits containing `.context-pr/`,
+`.env`, or `secrets/`.
 
 Local hooks can be bypassed with `--no-verify`, so use the CLI guard in CI when you want a hard
 repository policy:
@@ -126,12 +137,17 @@ repository policy:
   run: context-pr guard
 ```
 
-`context-pr guard` fails if `.context-pr/` or `.env` is already tracked by git. If that happens,
-remove the files from the index without deleting your local copies:
+`context-pr guard` fails if `.context-pr/`, `.env`, or `secrets/` is already tracked by git. If
+that happens, remove the files from the index without deleting your local copies:
 
 ```bash
-git rm -r --cached .context-pr .env
+git rm -r --cached .context-pr .env secrets
 ```
+
+In this prototype, repositories that install ContextPR must provide their own GitHub App
+credentials locally. A future hosted ContextPR service could keep the official ContextPR GitHub
+App private key in a trusted backend or vault and post comments as the shared `ContextPR[bot]`
+identity without distributing that private key to users.
 
 ## Local history mode
 

@@ -344,18 +344,24 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     (repo / ".env").write_text("# Existing app config\nEXISTING=value\n", encoding="utf-8")
+    private_key = tmp_path / "app-key.pem"
+    private_key.write_text(
+        "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
     monkeypatch.chdir(repo)
 
     result = runner.invoke(
         app,
         ["init"],
-        input="github-token\nsonar-token\nocto/example\ncontextpr\nplatform\n",
+        input=f"12345\n67890\n{private_key}\nsonar-token\nocto/example\ncontextpr\nplatform\n",
     )
 
     assert result.exit_code == 0
     assert (repo / ".context-pr" / "config.toml").is_file()
     assert ".context-pr/" in (repo / ".gitignore").read_text(encoding="utf-8")
     assert ".env" in (repo / ".gitignore").read_text(encoding="utf-8")
+    assert "secrets/" in (repo / ".gitignore").read_text(encoding="utf-8")
     hook = repo / ".git" / "hooks" / "pre-commit"
     assert "ContextPR refuses to commit local state or secrets" in hook.read_text(
         encoding="utf-8"
@@ -363,9 +369,13 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     env = (repo / ".env").read_text(encoding="utf-8")
     assert "# Existing app config" in env
     assert "EXISTING=value" in env
-    assert "CONTEXTPR_GITHUB_TOKEN=github-token" in env
+    assert "CONTEXTPR_GITHUB_APP_ID=12345" in env
+    assert "CONTEXTPR_GITHUB_INSTALLATION_ID=67890" in env
     assert "CONTEXTPR_SONAR_TOKEN=sonar-token" in env
     assert "CONTEXTPR_LOCAL_HISTORY_DB_PATH=" in env
+    assert (repo / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem").read_text(
+        encoding="utf-8"
+    ) == private_key.read_text(encoding="utf-8")
 
 
 def test_guard_passes_when_local_paths_are_not_tracked(

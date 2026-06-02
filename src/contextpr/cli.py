@@ -31,13 +31,12 @@ analyze_app = typer.Typer(help="Analyze pull requests.", no_args_is_help=True)
 app.add_typer(analyze_app, name="analyze")
 
 GITIGNORE_ENTRIES = (
-    "# ContextPR local state",
     f"{REPO_STATE_DIR_NAME}/",
-    "# ContextPR local secrets",
     ".env",
+    "secrets/",
 )
 PRE_COMMIT_HOOK = f"""#!/bin/sh
-blocked="$(git diff --cached --name-only -- {REPO_STATE_DIR_NAME} .env)"
+blocked="$(git diff --cached --name-only -- {REPO_STATE_DIR_NAME} .env secrets)"
 if [ -n "$blocked" ]; then
   echo "ContextPR refuses to commit local state or secrets:" >&2
   echo "$blocked" >&2
@@ -219,7 +218,7 @@ def init(
     if install_hook:
         _install_pre_commit_hook(root)
     if configure_secrets:
-        _configure_env_file(root)
+        _configure_local_credentials(root)
 
     tracked = _tracked_local_paths(root)
     typer.echo(f"ContextPR initialized in {state_dir}.")
@@ -381,21 +380,28 @@ def _install_pre_commit_hook(root: Path) -> None:
     hook_path.chmod(hook_path.stat().st_mode | 0o111)
 
 
-def _configure_env_file(root: Path) -> None:
+def _configure_local_credentials(root: Path) -> None:
     env_path = root / ".env"
     values = _read_env_values(env_path)
     values.update(
         {
-            "CONTEXTPR_GITHUB_TOKEN": typer.prompt(
-                "GitHub token",
-                default=(
-                    values.get("CONTEXTPR_GITHUB_TOKEN")
-                    or os.environ.get("CONTEXTPR_GITHUB_TOKEN")
-                    or os.environ.get("GITHUB_TOKEN")
-                    or ""
-                ),
-                hide_input=True,
+            "CONTEXTPR_GITHUB_APP_ID": typer.prompt(
+                "GitHub App ID",
+                default=values.get("CONTEXTPR_GITHUB_APP_ID")
+                or os.environ.get("CONTEXTPR_GITHUB_APP_ID")
+                or "",
             ),
+            "CONTEXTPR_GITHUB_INSTALLATION_ID": typer.prompt(
+                "GitHub App installation ID",
+                default=values.get("CONTEXTPR_GITHUB_INSTALLATION_ID")
+                or os.environ.get("CONTEXTPR_GITHUB_INSTALLATION_ID")
+                or "",
+            ),
+        }
+    )
+    _write_github_app_private_key(root)
+    values.update(
+        {
             "CONTEXTPR_SONAR_TOKEN": typer.prompt(
                 "Sonar token",
                 default=values.get("CONTEXTPR_SONAR_TOKEN")
@@ -403,10 +409,6 @@ def _configure_env_file(root: Path) -> None:
                 or "",
                 hide_input=True,
             ),
-        }
-    )
-    values.update(
-        {
             "CONTEXTPR_GITHUB_REPOSITORY": typer.prompt(
                 "GitHub repository, for example owner/repo",
                 default=values.get("CONTEXTPR_GITHUB_REPOSITORY")
@@ -431,6 +433,29 @@ def _configure_env_file(root: Path) -> None:
     )
     _write_env_values(env_path, values)
     typer.echo(f"Wrote local secrets to {env_path}.")
+    typer.echo(
+        "Wrote GitHub App private key to "
+        f"{root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
+    )
+
+
+def _write_github_app_private_key(root: Path) -> None:
+    destination = root / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
+    existing_default = str(destination) if destination.is_file() else ""
+    source = typer.prompt(
+        "GitHub App private key PEM file path",
+        default=existing_default,
+    )
+    source_path = Path(source).expanduser()
+    if not source_path.is_file():
+        raise typer.BadParameter(f"GitHub App private key file does not exist: {source_path}")
+
+    private_key = source_path.read_text(encoding="utf-8").strip()
+    if "BEGIN" not in private_key or "PRIVATE KEY" not in private_key:
+        raise typer.BadParameter("GitHub App private key file does not look like a PEM key.")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(private_key + "\n", encoding="utf-8")
 
 
 def _read_env_values(path: Path) -> dict[str, str]:
@@ -471,7 +496,7 @@ def _write_env_values(path: Path, values: dict[str, str]) -> None:
 
 def _tracked_local_paths(root: Path) -> list[str]:
     result = subprocess.run(
-        ["git", "ls-files", REPO_STATE_DIR_NAME, ".env"],
+        ["git", "ls-files", REPO_STATE_DIR_NAME, ".env", "secrets"],
         cwd=root,
         check=False,
         capture_output=True,
