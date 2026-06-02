@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-def test_action_entrypoint_reads_hyphenated_input_names(tmp_path: Path) -> None:
+def test_action_entrypoint_reads_input_names(tmp_path: Path) -> None:
     capture_path = tmp_path / "capture.json"
     fake_contextpr = tmp_path / "contextpr"
     fake_contextpr.write_text(
@@ -22,8 +22,10 @@ def test_action_entrypoint_reads_hyphenated_input_names(tmp_path: Path) -> None:
                 "    'argv': os.sys.argv[1:],",
                 "    'env': {",
                 "        'CONTEXTPR_SONAR_TOKEN': os.environ.get('CONTEXTPR_SONAR_TOKEN'),",
-                "        'CONTEXTPR_SONAR_PROJECT_KEY': os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
-                "        'CONTEXTPR_GITHUB_REPOSITORY': os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
+                "        'CONTEXTPR_SONAR_PROJECT_KEY': "
+                "os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
+                "        'CONTEXTPR_GITHUB_REPOSITORY': "
+                "os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
                 "        'CONTEXTPR_GITHUB_TOKEN': os.environ.get('CONTEXTPR_GITHUB_TOKEN'),",
                 "    },",
                 "} ))",
@@ -35,12 +37,12 @@ def test_action_entrypoint_reads_hyphenated_input_names(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["PATH"] = f"{tmp_path}:{env['PATH']}"
-    env["INPUT_SONAR-TOKEN"] = "sonar-token"
-    env["INPUT_SONAR-PROJECT-KEY"] = "project-key"
-    env["INPUT_GITHUB-REPOSITORY"] = "octo/example"
-    env["INPUT_GITHUB-TOKEN"] = "gh-token"
-    env["INPUT_PR-NUMBER"] = "42"
-    env["INPUT_DRY-RUN"] = "false"
+    env["INPUT_SONAR_TOKEN"] = "sonar-token"
+    env["INPUT_SONAR_PROJECT_KEY"] = "project-key"
+    env["INPUT_GITHUB_REPOSITORY"] = "octo/example"
+    env["INPUT_GITHUB_TOKEN"] = "gh-token"
+    env["INPUT_PR_NUMBER"] = "42"
+    env["INPUT_DRY_RUN"] = "false"
 
     subprocess.run(
         ["/bin/sh", "scripts/action-entrypoint.sh"],
@@ -74,8 +76,10 @@ def test_action_entrypoint_falls_back_to_contextpr_env_vars(tmp_path: Path) -> N
                 "    'argv': os.sys.argv[1:],",
                 "    'env': {",
                 "        'CONTEXTPR_SONAR_TOKEN': os.environ.get('CONTEXTPR_SONAR_TOKEN'),",
-                "        'CONTEXTPR_SONAR_PROJECT_KEY': os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
-                "        'CONTEXTPR_GITHUB_REPOSITORY': os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
+                "        'CONTEXTPR_SONAR_PROJECT_KEY': "
+                "os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
+                "        'CONTEXTPR_GITHUB_REPOSITORY': "
+                "os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
                 "        'CONTEXTPR_GITHUB_TOKEN': os.environ.get('CONTEXTPR_GITHUB_TOKEN'),",
                 "    },",
                 "} ))",
