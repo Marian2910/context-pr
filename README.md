@@ -100,6 +100,7 @@ context-pr init
 context-pr sync
 context-pr analyze pr 3 --no-dry-run
 context-pr update
+context-pr uninstall
 ```
 
 `context-pr init` creates repo-local operational state:
@@ -159,6 +160,15 @@ context-pr update
 When ContextPR is installed with `pipx`, this delegates to `pipx upgrade contextpr`. In other
 Python environments, it upgrades from the GitHub package source. The displayed release version
 comes from the installed package metadata, so `pyproject.toml` is the source of truth.
+
+To remove the installed CLI:
+
+```bash
+context-pr uninstall
+```
+
+This removes the installed Python package. Repo-local state such as `.context-pr/`, `.env`, and
+`secrets/` is intentionally left in place.
 
 ## Local history mode
 

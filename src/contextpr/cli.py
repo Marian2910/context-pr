@@ -267,6 +267,11 @@ def update(
     typer.echo("ContextPR update completed. Run `context-pr --version` to confirm.")
 
 
+@app.command()
+def uninstall() -> None:
+    _uninstall()
+
+
 def _sync_history_command() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
@@ -600,3 +605,25 @@ def _update_command(source: str) -> list[str]:
     ):
         return ["pipx", "upgrade", "contextpr"]
     return [sys.executable, "-m", "pip", "install", "--upgrade", source]
+
+
+def _uninstall() -> None:
+    command = _uninstall_command()
+    typer.echo("Uninstalling ContextPR.")
+    typer.echo("Repo-local state such as .context-pr/, .env, and secrets/ will be left intact.")
+    typer.echo(f"Running: {' '.join(command)}")
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        raise typer.Exit(result.returncode)
+
+
+def _uninstall_command() -> list[str]:
+    executable = Path(sys.executable)
+    if (
+        executable.parent.name == "bin"
+        and executable.parent.parent.name == "contextpr"
+        and executable.parent.parent.parent.name == "venvs"
+        and executable.parent.parent.parent.parent.name == "pipx"
+    ):
+        return ["pipx", "uninstall", "contextpr"]
+    return [sys.executable, "-m", "pip", "uninstall", "-y", "contextpr"]

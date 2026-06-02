@@ -463,3 +463,49 @@ def test_update_uses_pipx_when_running_from_pipx_venv(
 
     assert result.exit_code == 0
     assert calls == [["pipx", "upgrade", "contextpr"]]
+
+
+def test_uninstall_runs_pip_uninstall_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakeCompletedProcess:
+        returncode = 0
+
+    def fake_run(command: list[str], *, check: bool) -> FakeCompletedProcess:
+        calls.append(command)
+        assert check is False
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr("contextpr.cli.sys.executable", "/opt/contextpr/bin/python")
+    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["uninstall"], env={})
+
+    assert result.exit_code == 0
+    assert calls == [["/opt/contextpr/bin/python", "-m", "pip", "uninstall", "-y", "contextpr"]]
+
+
+def test_uninstall_uses_pipx_when_running_from_pipx_venv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class FakeCompletedProcess:
+        returncode = 0
+
+    def fake_run(command: list[str], *, check: bool) -> FakeCompletedProcess:
+        calls.append(command)
+        assert check is False
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(
+        "contextpr.cli.sys.executable",
+        "/Users/example/.local/pipx/venvs/contextpr/bin/python",
+    )
+    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["uninstall"], env={})
+
+    assert result.exit_code == 0
+    assert calls == [["pipx", "uninstall", "contextpr"]]
+
