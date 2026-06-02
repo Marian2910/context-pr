@@ -355,6 +355,7 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
         app,
         ["init"],
         input=f"12345\n67890\n{private_key}\nsonar-token\nocto/example\ncontextpr\nplatform\n",
+        env={},
     )
 
     assert result.exit_code == 0
@@ -387,7 +388,7 @@ def test_guard_passes_when_local_paths_are_not_tracked(
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     monkeypatch.chdir(repo)
 
-    result = runner.invoke(app, ["guard"])
+    result = runner.invoke(app, ["guard"], env={})
 
     assert result.exit_code == 0
     assert "guard passed" in result.output
@@ -404,7 +405,7 @@ def test_guard_fails_when_local_paths_are_tracked(
     subprocess.run(["git", "add", ".env"], cwd=repo, check=True, capture_output=True)
     monkeypatch.chdir(repo)
 
-    result = runner.invoke(app, ["guard"])
+    result = runner.invoke(app, ["guard"], env={})
 
     assert result.exit_code != 0
     assert ".env" in result.output
