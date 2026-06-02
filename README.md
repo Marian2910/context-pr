@@ -99,6 +99,7 @@ cd path/to/your/repository
 context-pr init
 context-pr sync
 context-pr analyze pr 3 --no-dry-run
+context-pr update
 ```
 
 `context-pr init` creates repo-local operational state:
@@ -148,6 +149,16 @@ In this prototype, repositories that install ContextPR must provide their own Gi
 credentials locally. A future hosted ContextPR service could keep the official ContextPR GitHub
 App private key in a trusted backend or vault and post comments as the shared `ContextPR[bot]`
 identity without distributing that private key to users.
+
+To update an installed CLI:
+
+```bash
+context-pr update
+```
+
+When ContextPR is installed with `pipx`, this delegates to `pipx upgrade contextpr`. In other
+Python environments, it upgrades from the GitHub package source. The displayed release version
+comes from the installed package metadata, so `pyproject.toml` is the source of truth.
 
 ## Local history mode
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -195,28 +198,21 @@ def init(
         ),
     ] = True,
 ) -> None:
+    _show_init_banner()
     root = _repository_root()
-    state_dir = root / REPO_STATE_DIR_NAME
-    state_dir.mkdir(parents=True, exist_ok=True)
-    config_path = state_dir / REPO_CONFIG_FILE_NAME
-    if not config_path.exists():
-        config_path.write_text(
-            "\n".join(
-                (
-                    'github_repository = ""',
-                    'sonar_project_key = ""',
-                    'sonar_organization = ""',
-                    'sonar_host_url = "https://sonarcloud.io"',
-                    "local_history_enabled = true",
-                    "",
-                )
-            ),
-            encoding="utf-8",
-        )
-
-    _ensure_gitignore_entries(root / ".gitignore", GITIGNORE_ENTRIES)
+    state_dir = _animated_step(
+        "Preparing repository state",
+        lambda: _ensure_repo_state(root),
+    )
+    _animated_step(
+        "Updating gitignore",
+        lambda: _ensure_gitignore_entries(root / ".gitignore", GITIGNORE_ENTRIES),
+    )
     if install_hook:
-        _install_pre_commit_hook(root)
+        _animated_step(
+            "Installing commit guard",
+            lambda: _install_pre_commit_hook(root),
+        )
     if configure_secrets:
         _configure_local_credentials(root)
 
@@ -250,6 +246,25 @@ def guard() -> None:
             f"{', '.join(tracked)}. Remove them with git rm --cached."
         )
     typer.echo("ContextPR guard passed: no local state or secrets are tracked.")
+
+
+@app.command()
+def update(
+    source: Annotated[
+        str,
+        typer.Option(
+            "--source",
+            help="Package spec to install when updating outside pipx.",
+        ),
+    ] = "git+https://github.com/Marian2910/context-pr.git",
+) -> None:
+    typer.echo(f"ContextPR current version: {__version__}")
+    command = _update_command(source)
+    typer.echo(f"Running: {' '.join(command)}")
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        raise typer.Exit(result.returncode)
+    typer.echo("ContextPR update completed. Run `context-pr --version` to confirm.")
 
 
 def _sync_history_command() -> None:
@@ -352,6 +367,74 @@ def _repository_root() -> Path:
     if result.returncode != 0:
         raise typer.BadParameter("ContextPR init must be run inside a git repository.")
     return Path(result.stdout.strip()).resolve()
+
+
+def _show_init_banner() -> None:
+    if not sys.stdout.isatty():
+        return
+    typer.echo(
+        f"""
+  ######   #######  ##    ## ######## ######## ##     ## ########
+ ##    ## ##     ## ###   ##    ##    ##        ##   ##     ##
+ ##       ##     ## ####  ##    ##    ##         ## ##      ##
+ ##       ##     ## ## ## ##    ##    ######      ###       ##
+ ##       ##     ## ##  ####    ##    ##         ## ##      ##
+ ##    ## ##     ## ##   ###    ##    ##        ##   ##     ##
+  ######   #######  ##    ##    ##    ######## ##     ##    ##
+
+        ########  ########
+        ##     ## ##     ##
+        ##     ## ##     ##
+        ########  ########
+        ##        ##   ##
+        ##        ##    ##
+        ##        ##     ##
+
+ContextPR release {__version__}
+"""
+    )
+
+
+def _animated_step[T](label: str, action: Callable[[], T]) -> T:
+    if not sys.stdout.isatty():
+        return action()
+
+    frames = ("|", "/", "-", "\\")
+    typer.echo(f"{label} ", nl=False)
+    started_at = time.monotonic()
+    try:
+        result = action()
+        while time.monotonic() - started_at < 0.35:
+            frame = frames[int((time.monotonic() - started_at) * 12) % len(frames)]
+            typer.echo(f"\r{label} {frame}", nl=False)
+            time.sleep(0.08)
+    except Exception:
+        typer.echo(f"\r{label} failed")
+        raise
+
+    typer.echo(f"\r{label} done ")
+    return result
+
+
+def _ensure_repo_state(root: Path) -> Path:
+    state_dir = root / REPO_STATE_DIR_NAME
+    state_dir.mkdir(parents=True, exist_ok=True)
+    config_path = state_dir / REPO_CONFIG_FILE_NAME
+    if not config_path.exists():
+        config_path.write_text(
+            "\n".join(
+                (
+                    'github_repository = ""',
+                    'sonar_project_key = ""',
+                    'sonar_organization = ""',
+                    'sonar_host_url = "https://sonarcloud.io"',
+                    "local_history_enabled = true",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+    return state_dir
 
 
 def _ensure_gitignore_entries(path: Path, entries: tuple[str, ...]) -> None:
@@ -505,3 +588,15 @@ def _tracked_local_paths(root: Path) -> list[str]:
     if result.returncode != 0:
         return []
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _update_command(source: str) -> list[str]:
+    executable = Path(sys.executable)
+    if (
+        executable.parent.name == "bin"
+        and executable.parent.parent.name == "contextpr"
+        and executable.parent.parent.parent.name == "venvs"
+        and executable.parent.parent.parent.parent.name == "pipx"
+    ):
+        return ["pipx", "upgrade", "contextpr"]
+    return [sys.executable, "-m", "pip", "install", "--upgrade", source]

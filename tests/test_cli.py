@@ -409,3 +409,57 @@ def test_guard_fails_when_local_paths_are_tracked(
 
     assert result.exit_code != 0
     assert ".env" in result.output
+
+
+def test_update_runs_pip_upgrade_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakeCompletedProcess:
+        returncode = 0
+
+    def fake_run(command: list[str], *, check: bool) -> FakeCompletedProcess:
+        calls.append(command)
+        assert check is False
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr("contextpr.cli.sys.executable", "/opt/contextpr/bin/python")
+    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["update"], env={})
+
+    assert result.exit_code == 0
+    assert calls == [
+        [
+            "/opt/contextpr/bin/python",
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "git+https://github.com/Marian2910/context-pr.git",
+        ]
+    ]
+
+
+def test_update_uses_pipx_when_running_from_pipx_venv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class FakeCompletedProcess:
+        returncode = 0
+
+    def fake_run(command: list[str], *, check: bool) -> FakeCompletedProcess:
+        calls.append(command)
+        assert check is False
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(
+        "contextpr.cli.sys.executable",
+        "/Users/example/.local/pipx/venvs/contextpr/bin/python",
+    )
+    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["update"], env={})
+
+    assert result.exit_code == 0
+    assert calls == [["pipx", "upgrade", "contextpr"]]
