@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-from contextpr.enrichment.history_local_git import LocalGitHistoryRetriever
-from contextpr.enrichment.history_types import IssueContextEvidence
-from contextpr.enrichment.history_utils import distribution, dominant_share, path_family, path_scope, salient_terms, share
+from contextpr.enrichment.history.local.git import LocalGitHistoryRetriever
+from contextpr.enrichment.history.types import IssueContextEvidence
+from contextpr.enrichment.history.utils import distribution, dominant_share, path_family, path_scope, salient_terms, share
 from contextpr.models import SonarIssue
-from contextpr.persistence import HistoryStore, PullRequestFileRecord, PullRequestRecord
+from contextpr.persistence import HistoryStore, PullRequestFileRecord, PullRequestRecord, SonarIssueRecord
 
 
 class LocalPullRequestHistoryRetriever:
     def __init__(self, store: HistoryStore, repository_key: str) -> None:
         self._store = store
         self._repository_key = repository_key
+        self._pull_requests: list[PullRequestRecord] | None = None
+        self._files_by_pr: dict[int, list[PullRequestFileRecord]] | None = None
+        self._sonar_issues: list[SonarIssueRecord] | None = None
 
     def find_context(self, issue: SonarIssue, *, top_k: int = 25) -> IssueContextEvidence | None:
-        pull_requests = self._store.list_pull_requests(self._repository_key)
+        pull_requests = self._list_pull_requests()
         if not pull_requests:
             return None
-        files_by_pr = {
-            pull_request.pr_number: self._store.list_pull_request_files(self._repository_key, pull_request.pr_number)
-            for pull_request in pull_requests
-        }
+        files_by_pr = self._list_pull_request_files_by_pr()
         scored: list[tuple[PullRequestRecord, list[PullRequestFileRecord], float]] = []
         for pull_request in pull_requests:
             files = files_by_pr.get(pull_request.pr_number, [])
@@ -63,7 +63,7 @@ class LocalPullRequestHistoryRetriever:
         dominant_maintenance, dominant_maintenance_share = dominant_share(maintenance_distribution, sample_size=len(relevant))
         same_rule_history = [
             record
-            for record in self._store.list_sonar_issues(self._repository_key)
+            for record in self._list_sonar_issues()
             if record.rule == issue.rule and LocalGitHistoryRetriever._rule_history_is_relevant(issue, record.component)
         ]
         same_rule_matches = min(max(len(same_rule_history), same_exact_path_matches), len(relevant))
@@ -117,3 +117,24 @@ class LocalPullRequestHistoryRetriever:
         if any(token in normalized for token in ("test", "docs", "readme", "workflow", "ci", "build")):
             return "supporting"
         return "cleanup"
+
+    def _list_pull_requests(self) -> list[PullRequestRecord]:
+        if self._pull_requests is None:
+            self._pull_requests = self._store.list_pull_requests(self._repository_key)
+        return self._pull_requests
+
+    def _list_pull_request_files_by_pr(self) -> dict[int, list[PullRequestFileRecord]]:
+        if self._files_by_pr is None:
+            self._files_by_pr = {
+                pull_request.pr_number: self._store.list_pull_request_files(
+                    self._repository_key,
+                    pull_request.pr_number,
+                )
+                for pull_request in self._list_pull_requests()
+            }
+        return self._files_by_pr
+
+    def _list_sonar_issues(self) -> list[SonarIssueRecord]:
+        if self._sonar_issues is None:
+            self._sonar_issues = self._store.list_sonar_issues(self._repository_key)
+        return self._sonar_issues

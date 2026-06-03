@@ -118,6 +118,20 @@ class FakeIssueEnricher:
         )
 
 
+class FakeBatchIssueEnricher(FakeIssueEnricher):
+    def __init__(self) -> None:
+        self.enrich_calls: list[str] = []
+        self.enrich_many_calls: list[list[str]] = []
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment:
+        self.enrich_calls.append(issue.key)
+        return super().enrich(issue)
+
+    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment]:
+        self.enrich_many_calls.append([issue.key for issue in issues])
+        return {issue.key: FakeIssueEnricher.enrich(self, issue) for issue in issues}
+
+
 def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     github_client = FakeGitHubClient()
     service = AnalysisService(
@@ -147,6 +161,55 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." not in comments[0].body
     assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
     assert github_client.deleted_comment_ids == [99]
+
+
+def test_analyze_pull_request_uses_batch_enrichment() -> None:
+    github_client = FakeGitHubClient()
+    issue_enricher = FakeBatchIssueEnricher()
+    service = AnalysisService(
+        github_client=github_client,
+        sonar_client=FakeSonarClient(),
+        issue_enricher=issue_enricher,
+    )
+
+    service.analyze_pull_request(
+        pull_request=PullRequestRef(repository="octo/example", number=7),
+        dry_run=True,
+    )
+
+    assert issue_enricher.enrich_many_calls == [["issue-1", "issue-2", "issue-3"]]
+    assert issue_enricher.enrich_calls == []
+
+
+def test_drafts_to_comments_skips_repeated_guidance() -> None:
+    issue_enricher = FakeIssueEnricher()
+    first_issue = SonarIssue(
+        key="issue-1",
+        rule="python:S100",
+        severity="MAJOR",
+        message="First issue",
+        location=IssueLocation(path="src/app.py", line=11),
+        issue_type="CODE_SMELL",
+    )
+    second_issue = SonarIssue(
+        key="issue-2",
+        rule="python:S100",
+        severity="MAJOR",
+        message="First issue",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
+    composer = ReviewCommentComposer()
+
+    comments = composer.drafts_to_comments(
+        [
+            composer.issue_to_draft(first_issue, {11, 12}, issue_enricher.enrich(first_issue)),
+            composer.issue_to_draft(second_issue, {11, 12}, issue_enricher.enrich(second_issue)),
+        ]
+    )
+
+    assert len(comments) == 1
+    assert comments[0].line == 11
 
 
 def test_analyze_pull_request_skips_publish_on_dry_run() -> None:

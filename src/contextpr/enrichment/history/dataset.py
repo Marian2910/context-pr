@@ -5,9 +5,9 @@ from pathlib import Path
 import pandas as pd
 
 from contextpr.data.dataset import TARGET_COLUMN, load_dataset
-from contextpr.enrichment.history_constants import MIN_RETRIEVAL_SCORE, STRONG_MATCH_SCORE
-from contextpr.enrichment.history_types import IssueContextEvidence
-from contextpr.enrichment.history_utils import (
+from contextpr.enrichment.history.constants import MIN_RETRIEVAL_SCORE, STRONG_MATCH_SCORE
+from contextpr.enrichment.history.types import IssueContextEvidence
+from contextpr.enrichment.history.utils import (
     component_path,
     distribution,
     dominant_share,
