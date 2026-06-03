@@ -97,6 +97,7 @@ pipx install git+https://github.com/Marian2910/context-pr.git
 
 cd path/to/your/repository
 context-pr init
+context-pr help
 context-pr sync
 context-pr analyze pr 3 --no-dry-run
 context-pr update

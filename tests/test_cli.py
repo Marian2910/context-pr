@@ -102,6 +102,18 @@ def test_cli_help_includes_analyze_command() -> None:
     assert "analyze" in result.stdout
 
 
+def test_help_command_prints_user_command_guide() -> None:
+    result = runner.invoke(app, ["help"])
+
+    assert result.exit_code == 0
+    assert "ContextPR" in result.stdout
+    assert "Common commands:" in result.stdout
+    assert "context-pr init" in result.stdout
+    assert "context-pr sync" in result.stdout
+    assert "context-pr analyze pr 3 --no-dry-run" in result.stdout
+    assert "context-pr uninstall" in result.stdout
+
+
 def test_analyze_syncs_local_history_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -508,4 +520,3 @@ def test_uninstall_uses_pipx_when_running_from_pipx_venv(
 
     assert result.exit_code == 0
     assert calls == [["pipx", "uninstall", "contextpr"]]
-

@@ -272,6 +272,36 @@ def uninstall() -> None:
     _uninstall()
 
 
+@app.command("help")
+def help_command() -> None:
+    typer.echo(_help_text())
+
+
+def _help_text() -> str:
+    return f"""ContextPR {__version__}
+
+ContextPR analyzes Sonar pull request findings and posts contextual GitHub PR feedback.
+
+Common commands:
+  context-pr init                         Set up ContextPR in the current git repository.
+  context-pr sync                         Sync local Sonar, PR, review, and commit history.
+  context-pr analyze pr 3 --no-dry-run    Analyze PR #3 and post GitHub comments.
+  context-pr guard                        Check that local state and secrets are not tracked.
+  context-pr update                       Upgrade the installed ContextPR CLI.
+  context-pr uninstall                    Remove the installed ContextPR package.
+
+Local files created by init:
+  .context-pr/                            Repo-local config and history database.
+  .env                                    GitHub App and Sonar settings.
+  secrets/GITHUB_APP_PRIVATE_KEY.pem      GitHub App private key.
+
+More detail:
+  context-pr --help
+  context-pr analyze --help
+  context-pr --version
+"""
+
+
 def _sync_history_command() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
