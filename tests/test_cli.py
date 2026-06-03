@@ -6,9 +6,16 @@ from typer.testing import CliRunner
 
 from contextpr.cli import app
 from contextpr.config import Settings
-from contextpr.integrations.github import GitHubCommitHistorySyncResult, GitHubHistorySyncResult
+from contextpr.integrations.github import (
+    LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+    LOCAL_GITHUB_SYNC_SOURCE,
+    GitHubCommitHistorySyncResult,
+    GitHubHistorySyncResult,
+)
 from contextpr.integrations.sonarqube import SonarProjectHistorySyncResult
+from contextpr.integrations.sonarqube_types import LOCAL_SONAR_SYNC_SOURCE
 from contextpr.models import PullRequestRef
+from contextpr.persistence import HistoryStore, SyncStateRecord
 from contextpr.services import AnalysisResult
 
 runner = CliRunner()
@@ -191,6 +198,67 @@ def test_analyze_syncs_local_history_when_enabled(
 
     assert result.exit_code == 0
     assert sync_calls == ["octo/example", "git:octo/example", "github:octo/example"]
+
+
+def test_analyze_skips_local_history_sync_when_index_is_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "cli-history.db"
+    store = HistoryStore(db_path)
+    for source_name, cursor in (
+        (LOCAL_SONAR_SYNC_SOURCE, "2026-05-16T10:00:00+00:00"),
+        (LOCAL_GITHUB_COMMIT_SYNC_SOURCE, "abc123"),
+        (LOCAL_GITHUB_SYNC_SOURCE, "2026-05-16T10:30:00+00:00"),
+    ):
+        store.upsert_sync_state(
+            SyncStateRecord(
+                repository_key="octo/example",
+                source_name=source_name,
+                cursor=cursor,
+                updated_at="2999-01-01T00:00:00+00:00",
+            )
+        )
+    sync_calls: list[str] = []
+
+    class FakeSonarClient:
+        def sync_project_issue_history(
+            self,
+            *,
+            store: object,
+            repository_key: str,
+        ) -> SonarProjectHistorySyncResult:
+            sync_calls.append(repository_key)
+            raise AssertionError("sync should be skipped")
+
+    class FakeGitHubClient:
+        def __init__(self, settings: object) -> None:
+            self.settings = settings
+
+        def sync_commit_history(self, *, store: object, repository_key: str) -> object:
+            sync_calls.append(f"git:{repository_key}")
+            raise AssertionError("sync should be skipped")
+
+        def sync_repository_history(self, *, store: object, repository_key: str) -> object:
+            sync_calls.append(f"github:{repository_key}")
+            raise AssertionError("sync should be skipped")
+
+    monkeypatch.setattr(
+        "contextpr.cli.Settings.from_env",
+        lambda *_args, **_kwargs: _settings_env(
+            local_history_enabled=True,
+            local_history_db_path=db_path,
+        ),
+    )
+    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
+    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+
+    result = runner.invoke(app, ["analyze", "--pr-number", "123", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert sync_calls == []
 
 
 def test_sync_history_command_runs_all_local_syncers(

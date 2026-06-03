@@ -58,6 +58,9 @@ class IssueEnrichmentClient(Protocol):
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
         ...
 
+    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
+        ...
+
 
 class AnalysisService:
     def __init__(
@@ -84,6 +87,7 @@ class AnalysisService:
             for pr_file in pull_request_files
         }
         issues = self._sonar_client.fetch_pull_request_issues(pull_request.number)
+        enrichments = self._enrich_issues(issues)
         drafts = [
             comment
             for issue in issues
@@ -91,11 +95,7 @@ class AnalysisService:
                 comment := self._review_comment_composer.issue_to_draft(
                     issue,
                     changed_lines=changed_lines_by_file.get(issue.location.path, set()),
-                    enrichment=(
-                        self._issue_enricher.enrich(issue)
-                        if self._issue_enricher is not None
-                        else None
-                    ),
+                    enrichment=enrichments.get(issue.key),
                 )
             )
             is not None
@@ -193,6 +193,14 @@ class AnalysisService:
             self._github_client.delete_review_comment(comment.comment_id)
 
         return len(managed_comments)
+
+    def _enrich_issues(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
+        if self._issue_enricher is None:
+            return {}
+        enrich_many = getattr(self._issue_enricher, "enrich_many", None)
+        if callable(enrich_many):
+            return enrich_many(issues)
+        return {issue.key: self._issue_enricher.enrich(issue) for issue in issues}
 
     @staticmethod
     def _extract_added_lines(patch: str | None) -> set[int]:

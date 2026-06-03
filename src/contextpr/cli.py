@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -14,8 +15,13 @@ import typer
 from contextpr import __version__
 from contextpr.config import REPO_CONFIG_FILE_NAME, REPO_STATE_DIR_NAME, Settings
 from contextpr.enrichment import IssueEnricher
-from contextpr.integrations.github import GitHubClient
+from contextpr.integrations.github import (
+    LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+    LOCAL_GITHUB_SYNC_SOURCE,
+    GitHubClient,
+)
 from contextpr.integrations.sonarqube import SonarQubeClient
+from contextpr.integrations.sonarqube_types import LOCAL_SONAR_SYNC_SOURCE
 from contextpr.logging_config import configure_logging
 from contextpr.models import PullRequestRef
 from contextpr.persistence import HistoryStore
@@ -30,6 +36,7 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 logger = logging.getLogger(__name__)
+LOCAL_HISTORY_SYNC_FRESHNESS = timedelta(minutes=10)
 analyze_app = typer.Typer(help="Analyze pull requests.", no_args_is_help=True)
 app.add_typer(analyze_app, name="analyze")
 
@@ -101,12 +108,32 @@ def _analyze_pull_request(
     local_git_enabled = False
     if settings.local_history_enabled:
         assert history_store is not None
-        local_git_enabled = _sync_local_history(
+        if _local_history_sync_is_fresh(
             history_store=history_store,
             repository_key=pull_request.repository,
-            github_client=github_client,
-            sonar_client=sonar_client,
-        )
+            max_age=LOCAL_HISTORY_SYNC_FRESHNESS,
+        ):
+            logger.info(
+                "Skipped local history sync because the local index is fresh.",
+                extra={
+                    "repository": pull_request.repository,
+                    "freshness_seconds": int(LOCAL_HISTORY_SYNC_FRESHNESS.total_seconds()),
+                },
+            )
+            local_git_enabled = (
+                history_store.get_sync_state(
+                    pull_request.repository,
+                    LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+                )
+                is not None
+            )
+        else:
+            local_git_enabled = _sync_local_history(
+                history_store=history_store,
+                repository_key=pull_request.repository,
+                github_client=github_client,
+                sonar_client=sonar_client,
+            )
 
     service = AnalysisService(
         github_client=github_client,
@@ -389,6 +416,42 @@ def _sync_local_history(
         },
     )
     return local_git_enabled
+
+
+def _local_history_sync_is_fresh(
+    *,
+    history_store: HistoryStore,
+    repository_key: str,
+    max_age: timedelta,
+) -> bool:
+    now = datetime.now(UTC)
+    for source_name in (
+        LOCAL_SONAR_SYNC_SOURCE,
+        LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
+        LOCAL_GITHUB_SYNC_SOURCE,
+    ):
+        state = history_store.get_sync_state(repository_key, source_name)
+        if state is None or state.updated_at is None:
+            return False
+        checked_at = _parse_sync_timestamp(state.updated_at)
+        if checked_at is None or now - checked_at > max_age:
+            return False
+    return True
+
+
+def _parse_sync_timestamp(value: str) -> datetime | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _repository_root() -> Path:

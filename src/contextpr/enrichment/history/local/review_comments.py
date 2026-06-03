@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-from contextpr.enrichment.history_local_git import LocalGitHistoryRetriever
-from contextpr.enrichment.history_types import IssueContextEvidence
-from contextpr.enrichment.history_utils import distribution, dominant_share, message_overlap, path_family, path_scope, salient_terms, share
+from contextpr.enrichment.history.local.git import LocalGitHistoryRetriever
+from contextpr.enrichment.history.types import IssueContextEvidence
+from contextpr.enrichment.history.utils import distribution, dominant_share, message_overlap, path_family, path_scope, salient_terms, share
 from contextpr.models import SonarIssue
-from contextpr.persistence import HistoryStore, PullRequestReviewCommentRecord
+from contextpr.persistence import HistoryStore, PullRequestReviewCommentRecord, SonarIssueRecord
 
 
 class LocalReviewCommentHistoryRetriever:
     def __init__(self, store: HistoryStore, repository_key: str) -> None:
         self._store = store
         self._repository_key = repository_key
+        self._comments: list[PullRequestReviewCommentRecord] | None = None
+        self._sonar_issues: list[SonarIssueRecord] | None = None
 
     def find_context(self, issue: SonarIssue, *, top_k: int = 25) -> IssueContextEvidence | None:
-        comments = self._store.list_all_pull_request_review_comments(self._repository_key)
+        comments = self._list_all_pull_request_review_comments()
         if not comments:
             return None
         scored: list[tuple[PullRequestReviewCommentRecord, float]] = []
@@ -53,7 +55,7 @@ class LocalReviewCommentHistoryRetriever:
         dominant_maintenance, dominant_maintenance_share = dominant_share(maintenance_distribution, sample_size=len(relevant))
         same_rule_history = [
             record
-            for record in self._store.list_sonar_issues(self._repository_key)
+            for record in self._list_sonar_issues()
             if record.rule == issue.rule and LocalGitHistoryRetriever._rule_history_is_relevant(issue, record.component)
         ]
         same_rule_matches = min(max(len(same_rule_history), same_exact_path_matches), len(relevant))
@@ -103,3 +105,13 @@ class LocalReviewCommentHistoryRetriever:
         if any(token in normalized for token in ("test", "docs", "comment", "naming")):
             return "supporting"
         return "cleanup"
+
+    def _list_all_pull_request_review_comments(self) -> list[PullRequestReviewCommentRecord]:
+        if self._comments is None:
+            self._comments = self._store.list_all_pull_request_review_comments(self._repository_key)
+        return self._comments
+
+    def _list_sonar_issues(self) -> list[SonarIssueRecord]:
+        if self._sonar_issues is None:
+            self._sonar_issues = self._store.list_sonar_issues(self._repository_key)
+        return self._sonar_issues
