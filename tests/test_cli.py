@@ -3,9 +3,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer import BadParameter
 from typer.testing import CliRunner
 
-from contextpr.cli import app
+from contextpr.cli import _safe_repo_file, app
 from contextpr.config import Settings
 from contextpr.integrations.github import (
     LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
@@ -456,6 +457,14 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     assert (repo / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem").read_text(
         encoding="utf-8"
     ) == private_key.read_text(encoding="utf-8")
+
+
+def test_safe_repo_file_rejects_paths_outside_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with pytest.raises(BadParameter, match="outside repository root"):
+        _safe_repo_file(repo, "../.gitignore")
 
 
 def test_guard_passes_when_local_paths_are_not_tracked(

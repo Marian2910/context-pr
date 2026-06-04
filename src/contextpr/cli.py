@@ -231,7 +231,7 @@ def init(
     )
     _animated_step(
         "Updating gitignore",
-        lambda: _ensure_gitignore_entries(root / ".gitignore", GITIGNORE_ENTRIES),
+        lambda: _ensure_repo_gitignore_entries(root, GITIGNORE_ENTRIES),
     )
     if install_hook:
         _animated_step(
@@ -531,7 +531,8 @@ def _ensure_repo_state(root: Path) -> Path:
     return state_dir
 
 
-def _ensure_gitignore_entries(path: Path, entries: tuple[str, ...]) -> None:
+def _ensure_repo_gitignore_entries(root: Path, entries: tuple[str, ...]) -> None:
+    path = _safe_repo_file(root, ".gitignore")
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = existing.splitlines()
     missing = [entry for entry in entries if entry not in lines]
@@ -539,6 +540,14 @@ def _ensure_gitignore_entries(path: Path, entries: tuple[str, ...]) -> None:
         return
     prefix = "\n" if existing and not existing.endswith("\n") else ""
     path.write_text(existing + prefix + "\n".join(missing) + "\n", encoding="utf-8")
+
+
+def _safe_repo_file(root: Path, filename: str) -> Path:
+    resolved_root = root.resolve(strict=True)
+    candidate = (resolved_root / filename).resolve(strict=False)
+    if candidate.parent != resolved_root or candidate.name != filename:
+        raise typer.BadParameter(f"Refusing to write outside repository root: {filename}")
+    return candidate
 
 
 def _install_pre_commit_hook(root: Path) -> None:
