@@ -4,7 +4,7 @@
 
 ContextPR is intended to connect static analysis findings with pull request review workflows.
 It fetches SonarQube or SonarCloud pull request issues, selectively enriches them with
-rule-based and historical context, and publishes high-signal inline review comments on GitHub.
+case-based historical context, and publishes high-signal inline review comments on GitHub.
 
 The current design intentionally avoids adding text to every issue. ContextPR should add
 developer-facing context only when it is likely to reduce ambiguity, support triage, or provide
@@ -44,72 +44,65 @@ The orchestration flow is:
    SQLite store.
 4. Retrieve changed pull request lines from GitHub.
 5. Keep only Sonar issues that can be attached to newly changed lines.
-6. Look up historical context from the local repository history store first and fall back to the
-   curated issue dataset only when repository history is unavailable or too sparse.
-7. Decide whether the issue should receive no, minimal, contextual, or detailed enrichment.
+6. Retrieve ranked historical Sonar cases from the local repository history store.
+7. Build enriched guidance only when the best case reaches the confidence gate.
 8. Compose concise review comments.
 9. Post or preview inline GitHub review comments.
 
 ## Enrichment strategy
 
-ContextPR's production enrichment path is currently deterministic and history-aware:
+ContextPR's production enrichment path is deterministic, case-based, and history-aware:
 
 ```text
-Sonar rule -> issue pattern -> guidance level -> optional historical note -> PR comment
+current Sonar issue -> ranked local Sonar cases -> confidence gate -> evidence-backed comment
 ```
 
-The implementation prefers stable Sonar rule identifiers over message text. Known Python rules
-are mapped directly to issue patterns, for example:
+The implementation prefers concrete historical cases over repository-level aggregate trends. A
+historical case contains the Sonar rule, message, file path, line, disposition, similarity score,
+confidence score, compact evidence facts, and an optional fix reference.
+
+The confidence gate is intentionally conservative:
 
 ```text
-python:S1481 -> unused_local_variable
-python:S1172 -> unused_function_parameter
-python:S1192 -> duplicated_literal
-python:S1186 -> empty_function
-python:S3923 -> duplicate_condition_branches
+confidence < 70% -> no ContextPR enrichment
+confidence >= 70% -> compact evidence-backed guidance
+confidence >= 90% with a PR-linked fix -> richer precedent template
 ```
 
-Message text is used only as a fallback for unknown or unmapped rules.
+The supported guidance decisions are:
 
-Each issue receives one of four guidance levels:
+- `likely worth fixing now`
+- `safe to defer`
+- `review carefully`
+- `similar fix available`
 
-- `none`: add no ContextPR text because Sonar is already self-explanatory or history is weak.
-- `minimal`: add only a short historical note.
-- `contextual`: add a short triage-oriented sentence plus historical evidence.
-- `detailed`: add a short explanation, next step, and optional historical evidence.
-
-This keeps simple warnings, such as unused local variables, from receiving redundant paraphrases
-of the Sonar message.
+Weak history, sparse history, global dataset matches, Git-only matches, PR-only matches, and
+review-comment-only matches do not create inline enrichment comments.
 
 Review comments are rendered as short paragraph-separated sections rather than one dense block.
 In practice this usually means:
 
 1. the original Sonar message
-2. a short explanation or follow-up recommendation when warranted
-3. a historical note when the evidence is grounded enough
+2. `ContextPR: <decision> · <confidence>% confidence`
+3. one compact reason sentence
+4. optionally, one closest precedent link or high-confidence PR-linked fix explanation
 
 ## Historical context
 
-ContextPR uses two history sources, with a clear preference order:
+ContextPR stores several kinds of repository history, but the current inline enrichment decision
+source is local Sonar issue history.
 
-- the local repository history store populated through `contextpr sync-history`
-- the curated dataset used as a cold-start fallback when local history is not yet useful
-
-Local repository history can include:
+The local repository history store can include:
 
 - Sonar project issue history
 - repository commit/file-touch history
 - merged pull request/file history
 - historical GitHub review comments
 
-The dataset fallback is intentionally narrower in product meaning:
-
-- it helps ContextPR say something sensible for fresh repositories
-- it does not justify `In this repository ...` wording
-- it is best treated as comparative background rather than project-specific evidence
-
-In other words, local history is the primary evidence source, and the dataset is a fallback for
-early-stage or low-history repositories.
+In v1 of the case-based enrichment flow, Git, pull request, and review-comment records are
+supporting evidence only. They may help attribute a resolved Sonar case to a merged pull request
+or strengthen confidence for that case, but they cannot independently create an inline enriched
+comment.
 
 In GitHub Actions deployments, the SQLite history database can be treated as a rolling cache
 rather than a permanent store. A workflow can restore the latest cached `history.db`, run an
@@ -117,30 +110,22 @@ incremental sync, save a new immutable cache entry, and then delete older cache 
 keeps repeated pull request analyses fast while preserving the design assumption that the
 authoritative systems are still Sonar and GitHub.
 
-Historical retrieval scores previous issues using rule, type, clean-code metadata, severity,
-file extension, tags, and message overlap. Historical notes are shown only when the evidence is
-grounded enough:
-
-- at least five similar issues are retrieved
-- at least one retrieved issue has the same Sonar rule
-- the most common label covers at least half of retrieved examples
-- at least two retrieved examples are strong matches
-
-The wording is confidence-aware. Small samples use cautious phrasing such as "in a small set of
-similar cases". Stronger evidence can use "often" or "usually". When the historical distribution
-is close across buckets, ContextPR reports mixed history instead of forcing a single conclusion.
+Historical retrieval scores previous Sonar issues using rule match, message similarity, path
+proximity, issue type, severity, tags, lifecycle disposition, recency, and optional fix-reference
+evidence. The result is a ranked list of historical cases, not an aggregate trend paragraph.
 
 When local Sonar history contains a resolved issue that can be attributed to a merged pull request,
-ContextPR can also attach a historical PR reference. That path is intentionally stricter than
-generic similarity notes: it requires merged PR evidence and touched-file support before a link is
-shown in the final GitHub comment.
+ContextPR can attach a historical PR reference. That path is intentionally stricter than compact
+case guidance: the comment uses the richer PR-linked precedent template only when the historical
+fix has at least 90% confidence.
 
 ## Dataset artifact
 
 The curated dataset is optional.
 
-- It is not required when ContextPR is used with repository-local history.
-- It is required only if you want the cross-repository fallback behavior.
+- It is not required for repository-local enrichment.
+- It is retained for compatibility and offline experiments.
+- It does not currently generate inline GitHub review comments.
 
 By default, the configuration points to:
 

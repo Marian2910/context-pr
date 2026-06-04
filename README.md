@@ -8,8 +8,8 @@ ContextPR is a Python tool for enriching SonarQube or SonarCloud pull request fi
 with repository-aware historical context and publishing actionable inline feedback on GitHub
 pull requests.
 
-The current implementation already supports deterministic comment generation, local history
-sync, historical PR-link evidence for resolved issues, a reusable CLI, and a Docker-based
+The current implementation supports deterministic, case-based comment generation, local history
+sync, historical PR-link evidence for resolved Sonar issues, a reusable CLI, and a Docker-based
 GitHub Action wrapper.
 
 ## Architecture at a glance
@@ -19,7 +19,7 @@ The package is organized around a few clear concerns:
 - `contextpr.cli`: user-facing command line entry points.
 - `contextpr.config`: environment-driven configuration loading.
 - `contextpr.integrations`: external system clients for GitHub and SonarQube/SonarCloud.
-- `contextpr.enrichment`: deterministic issue enrichment, historical retrieval, and message building.
+- `contextpr.enrichment`: case-based Sonar history retrieval, confidence scoring, and message building.
 - `contextpr.models`: shared application models.
 - `contextpr.services`: pull request analysis and review comment composition.
 - `contextpr.utils`: small reusable helper functions.
@@ -29,11 +29,11 @@ The current analysis pipeline is:
 1. Load runtime configuration.
 2. Read Sonar pull request analysis results.
 3. Optionally synchronize local Sonar, Git, and GitHub history into a SQLite store.
-4. Enrich issues with repository-local history when available, or fall back to the curated dataset when the repository has little or no history.
+4. Enrich issues only when local Sonar history provides a concrete historical case with enough confidence.
 5. Generate review-ready comment text.
 6. Post inline GitHub pull request comments.
 
-The same Python package can be used in two ways:
+The same Python package can be used in three ways:
 
 - as a local CLI for development and debugging
 - as an installable repository add-on with repo-local state
@@ -173,7 +173,12 @@ This removes the installed Python package. Repo-local state such as `.context-pr
 
 ## Local history mode
 
-ContextPR can enrich Sonar findings with repository-local history gathered from:
+ContextPR can enrich Sonar findings with repository-local history. In the current inline
+commenting path, local Sonar issue history is the decision source. Git, pull request, and file
+history can support attribution for a resolved Sonar case, but they do not independently create
+inline enrichment comments.
+
+The local store can contain:
 
 - historical Sonar project issues
 - merged pull requests and touched files
@@ -210,32 +215,21 @@ The local runtime folder:
 is operational state only. It holds the SQLite history database and should not be committed to
 git.
 
-## Dataset fallback mode
+## Dataset mode
 
-ContextPR can also use a curated cross-repository dataset as a fallback when a repository is too
-new to have useful local history yet.
+Older ContextPR prototypes used a curated cross-repository dataset as a cold-start fallback for
+inline comments. The current case-based implementation no longer uses that dataset to generate
+GitHub review comments.
 
-This fallback is intended for cold-start situations:
+The dataset path is still accepted for compatibility and experiments, but weak or missing local
+Sonar history now means ContextPR stays silent and leaves the baseline Sonar finding unchanged.
 
-- when local history is disabled
-- when local history is enabled but still sparse
-- when you want broader comparison examples during early experiments
+### Dataset artifact
 
-Dataset-backed comments are worded differently on purpose. They do not claim repository-specific
-evidence, and use phrasing such as:
-
-- `In similar issues from other repositories ...`
-
-instead of:
-
-- `In this repository ...`
-
-### Dataset requirement
-
-The dataset is optional, not required for the main local-history workflow.
+The dataset is optional and not required for the main local-history workflow.
 
 - If you want only repository-local enrichment, you do not need to provide the dataset file.
-- If you want cold-start fallback behavior, provide a dataset file through
+- If you are running offline experiments, you can still provide a dataset file through
   `CONTEXTPR_ISSUE_DATASET_PATH`.
 
 The default configured path is:
@@ -249,18 +243,47 @@ provided locally for experiments rather than stored in version control.
 
 ## Comment style
 
-ContextPR does not add text to every Sonar issue. It tries to stay out of the way when Sonar
-is already clear, and adds more context only when it has grounded historical evidence.
+ContextPR does not add text to every Sonar issue. It prefers silence over weak enrichment and
+adds repository context only when local Sonar history produces a scored historical case with at
+least 70% confidence.
 
-Depending on the issue and the available history, comments may include:
+The default enriched comment shape is compact:
 
-- the original Sonar message as the opening sentence
-- a short follow-up recommendation such as "This looks like a reasonable fix to keep in this PR."
-- a historical note about how similar issues were usually handled in this repository, or in other repositories when the dataset fallback is used
-- a linked historical PR when ContextPR can connect a fixed Sonar issue to merged PR file evidence
+```text
+<Sonar issue message>
 
-Rendered comments are intentionally split into short paragraphs to make the guidance easier to
-scan in GitHub reviews.
+ContextPR: <decision> · <confidence>% confidence
+Reason: <one compact evidence sentence>
+
+<optional closest precedent link>
+```
+
+Supported decisions are:
+
+- `likely worth fixing now`
+- `safe to defer`
+- `review carefully`
+- `similar fix available`
+
+When ContextPR can link a fixed historical Sonar issue to merged pull request file evidence and
+the confidence is at least 90%, it uses a slightly richer precedent template:
+
+```text
+A similar fixed case is linked to PR #9, with 94% confidence from Sonar resolution history.
+
+Why this match is shown:
+
+- same Sonar rule `python:S1192`
+- Sonar marked the historical issue as fixed/resolved
+- same file `httpie/internal/sonar_history_examples.py`
+- historical issue was near line 12
+
+Previous fix:
+https://github.com/org/repo/pull/9/files
+```
+
+Generic aggregate comments such as "this rule appeared multiple times" are intentionally not
+generated in the current implementation.
 
 ## Using the GitHub Action
 
@@ -385,7 +408,7 @@ The repository is still a research-oriented prototype, but it already supports t
 workflow needed for pull-request review experiments:
 
 - Sonar pull request issue retrieval
-- selective historical enrichment
+- selective case-based historical enrichment
 - repository-local history sync
 - historical PR-link evidence for fixed issues
 - GitHub inline review comment publishing
