@@ -95,6 +95,10 @@ class IssueContextEvidence:
 @dataclass(frozen=True, slots=True)
 class CombinedHistoricalContext:
     local_sonar: HistoricalEvidenceSummary | None = None
+    local_git: IssueContextEvidence | None = None
+    local_prs: IssueContextEvidence | None = None
+    local_review_comments: IssueContextEvidence | None = None
+    global_dataset: IssueContextEvidence | None = None
 
     def preferred_evidence(self) -> HistoricalEvidenceSummary | None:
         return self.local_sonar
@@ -104,6 +108,8 @@ class CombinedHistoricalContext:
             return "local_sonar"
         return None
 
+
+HistoricalContext = IssueContextEvidence
 
 FIX_REFERENCE_LOOKBACK_DAYS = 365
 FIX_REFERENCE_PR_LIMIT = 500

@@ -15,7 +15,7 @@ from contextpr.persistence.records import (
     SonarIssueRecord,
     SyncStateRecord,
 )
-from contextpr.persistence.store import HistoryStore, SCHEMA_VERSION
+from contextpr.persistence.store import SCHEMA_VERSION, HistoryStore
 
 __all__ = [
     "GitCommitRecord",

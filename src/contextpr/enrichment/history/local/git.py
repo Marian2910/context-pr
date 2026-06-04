@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-from contextpr.enrichment.history_types import IssueContextEvidence
-from contextpr.enrichment.history_utils import distribution, dominant_share, path_family, path_scope, salient_terms, share
+from contextpr.enrichment.history.types import IssueContextEvidence
+from contextpr.enrichment.history.utils import distribution, dominant_share, path_family, path_scope, salient_terms, share
 from contextpr.models import SonarIssue
-from contextpr.persistence import GitCommitRecord, GitFileTouchRecord, HistoryStore
+from contextpr.persistence import GitCommitRecord, GitFileTouchRecord, HistoryStore, SonarIssueRecord
 
 
 class LocalGitHistoryRetriever:
     def __init__(self, store: HistoryStore, repository_key: str) -> None:
         self._store = store
         self._repository_key = repository_key
+        self._commits: list[GitCommitRecord] | None = None
+        self._touches: list[GitFileTouchRecord] | None = None
+        self._sonar_issues: list[SonarIssueRecord] | None = None
 
     def find_context(self, issue: SonarIssue, *, top_k: int = 25) -> IssueContextEvidence | None:
-        commits = self._store.list_git_commits(self._repository_key)
+        commits = self._list_git_commits()
         if not commits:
             return None
-        touches = self._store.list_git_file_touches(self._repository_key)
+        touches = self._list_git_file_touches()
         touches_by_commit: dict[str, list[GitFileTouchRecord]] = {}
         for touch in touches:
             touches_by_commit.setdefault(touch.commit_sha, []).append(touch)
@@ -59,7 +62,7 @@ class LocalGitHistoryRetriever:
         maintenance_buckets = [self._maintenance_bucket_from_commit(commit.classification) for commit, _touches, _score in relevant]
         maintenance_distribution = distribution(maintenance_buckets)
         dominant_maintenance, dominant_maintenance_share = dominant_share(maintenance_distribution, sample_size=len(relevant))
-        sonar_issues = self._store.list_sonar_issues(self._repository_key)
+        sonar_issues = self._list_sonar_issues()
         same_rule_history = [
             record for record in sonar_issues if record.rule == issue.rule and self._rule_history_is_relevant(issue, record.component)
         ]
@@ -119,9 +122,24 @@ class LocalGitHistoryRetriever:
 
     @staticmethod
     def _rule_history_is_relevant(issue: SonarIssue, component: str) -> bool:
-        from contextpr.enrichment.history_utils import component_path
+        from contextpr.enrichment.history.utils import component_path
 
         record_path = component_path(component)
         issue_path = issue.location.path
         issue_family = path_family(issue_path)
         return record_path == issue_path or (bool(issue_family) and path_family(record_path) == issue_family)
+
+    def _list_git_commits(self) -> list[GitCommitRecord]:
+        if self._commits is None:
+            self._commits = self._store.list_git_commits(self._repository_key)
+        return self._commits
+
+    def _list_git_file_touches(self) -> list[GitFileTouchRecord]:
+        if self._touches is None:
+            self._touches = self._store.list_git_file_touches(self._repository_key)
+        return self._touches
+
+    def _list_sonar_issues(self) -> list[SonarIssueRecord]:
+        if self._sonar_issues is None:
+            self._sonar_issues = self._store.list_sonar_issues(self._repository_key)
+        return self._sonar_issues

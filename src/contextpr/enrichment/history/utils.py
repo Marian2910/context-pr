@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
-from contextpr.enrichment.history_constants import STOP_TOKENS, TEST_PATH_TOKENS, TOKEN_PATTERN
+from contextpr.enrichment.history.constants import STOP_TOKENS, TEST_PATH_TOKENS, TOKEN_PATTERN
 from contextpr.models import SonarIssue
 
 

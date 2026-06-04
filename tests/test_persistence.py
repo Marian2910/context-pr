@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from contextpr.persistence import (
+    SCHEMA_VERSION,
     GitCommitRecord,
     GitFileTouchRecord,
     HistoryStore,
@@ -13,7 +14,6 @@ from contextpr.persistence import (
     PullRequestRecord,
     PullRequestReviewCommentRecord,
     RepositoryLockError,
-    SCHEMA_VERSION,
     SonarIssueObservationRecord,
     SonarIssueRecord,
     SyncStateRecord,

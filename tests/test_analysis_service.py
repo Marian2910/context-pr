@@ -87,6 +87,23 @@ class FakeIssueEnricher:
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
         return _enrichment(case_key=issue.key)
 
+    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
+        return {issue.key: self.enrich(issue) for issue in issues}
+
+
+class FakeBatchIssueEnricher(FakeIssueEnricher):
+    def __init__(self) -> None:
+        self.enrich_calls: list[str] = []
+        self.enrich_many_calls: list[list[str]] = []
+
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment:
+        self.enrich_calls.append(issue.key)
+        return super().enrich(issue)
+
+    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
+        self.enrich_many_calls.append([issue.key for issue in issues])
+        return {issue.key: FakeIssueEnricher.enrich(self, issue) for issue in issues}
+
 
 def test_analyze_pull_request_posts_compact_evidence_comment() -> None:
     github_client = FakeGitHubClient()
@@ -117,6 +134,61 @@ def test_analyze_pull_request_posts_compact_evidence_comment() -> None:
     assert github_client.deleted_comment_ids == [99]
 
 
+def test_analyze_pull_request_uses_batch_enrichment() -> None:
+    github_client = FakeGitHubClient()
+    issue_enricher = FakeBatchIssueEnricher()
+    service = AnalysisService(
+        github_client=github_client,
+        sonar_client=FakeSonarClient(),
+        issue_enricher=issue_enricher,
+    )
+
+    service.analyze_pull_request(
+        pull_request=PullRequestRef(repository="octo/example", number=7),
+        dry_run=True,
+    )
+
+    assert issue_enricher.enrich_many_calls == [["issue-1", "issue-2", "issue-3"]]
+    assert issue_enricher.enrich_calls == []
+
+
+def test_drafts_to_comments_skips_repeated_guidance() -> None:
+    first_issue = SonarIssue(
+        key="issue-1",
+        rule="python:S100",
+        severity="MAJOR",
+        message="First issue",
+        location=IssueLocation(path="src/app.py", line=11),
+        issue_type="CODE_SMELL",
+    )
+    second_issue = SonarIssue(
+        key="issue-2",
+        rule="python:S100",
+        severity="MAJOR",
+        message="Second issue",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
+    composer = ReviewCommentComposer()
+    first_draft = composer.issue_to_draft(
+        first_issue,
+        {11, 12},
+        _enrichment(case_key="same-case"),
+    )
+    second_draft = composer.issue_to_draft(
+        second_issue,
+        {11, 12},
+        _enrichment(case_key="same-case"),
+    )
+    assert first_draft is not None
+    assert second_draft is not None
+
+    comments = composer.drafts_to_comments([first_draft, second_draft])
+
+    assert len(comments) == 1
+    assert comments[0].line == 11
+
+
 def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     github_client = FakeGitHubClient()
     service = AnalysisService(
@@ -135,40 +207,6 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     assert result.posted_comments == 0
     assert github_client.created_reviews == []
     assert github_client.deleted_comment_ids == []
-
-
-def test_drafts_to_comments_skips_repeated_evidence() -> None:
-    issue = SonarIssue(
-        key="issue-1",
-        rule="python:S100",
-        severity="MAJOR",
-        message="First issue",
-        location=IssueLocation(path="src/app.py", line=11),
-        issue_type="CODE_SMELL",
-    )
-    duplicate = SonarIssue(
-        key="issue-2",
-        rule="python:S100",
-        severity="MAJOR",
-        message="Second issue",
-        location=IssueLocation(path="src/app.py", line=12),
-        issue_type="CODE_SMELL",
-    )
-    composer = ReviewCommentComposer()
-    first_draft = composer.issue_to_draft(issue, {11, 12}, _enrichment(case_key="same-case"))
-    second_draft = composer.issue_to_draft(
-        duplicate,
-        {11, 12},
-        _enrichment(case_key="same-case"),
-    )
-    assert first_draft is not None
-    assert second_draft is not None
-
-    comments = composer.drafts_to_comments([first_draft, second_draft])
-
-    assert len(comments) == 2
-    assert "ContextPR:" in comments[0].body
-    assert comments[1].body.startswith("Same as in [src/app.py:11].")
 
 
 def test_issue_to_draft_falls_back_to_single_line_when_range_is_not_fully_added() -> None:

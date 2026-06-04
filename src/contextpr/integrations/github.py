@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -168,7 +169,7 @@ class GitHubClient:
                             repository_key=repository_key,
                             source_name=LOCAL_GITHUB_SYNC_SOURCE,
                             cursor=latest_update,
-                            updated_at=latest_update,
+                            updated_at=utc_now(),
                         )
                     )
 
@@ -231,7 +232,7 @@ class GitHubClient:
                             repository_key=repository_key,
                             source_name=LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
                             cursor=latest_commit_sha,
-                            updated_at=latest_authored_at,
+                            updated_at=utc_now(),
                         )
                     )
 
@@ -614,3 +615,7 @@ class GitHubClient:
             payload["start_line"] = comment.start_line
             payload["start_side"] = comment.start_side or comment.side
         return payload
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()

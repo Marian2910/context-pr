@@ -44,14 +44,12 @@ class ReviewCommentComposer:
 
     def drafts_to_comments(self, drafts: list[CommentDraft]) -> list[GitHubReviewComment]:
         comments: list[GitHubReviewComment] = []
-        seen_signatures: dict[str, str] = {}
+        seen_signatures: set[str] = set()
         for draft in drafts:
             signature = self.duplicate_signature(draft.issue, draft.enrichment)
-            body = self.build_comment_body(
-                draft.issue,
-                draft.enrichment,
-                duplicate_reference=seen_signatures.get(signature),
-            )
+            if signature in seen_signatures:
+                continue
+            body = self.build_comment_body(draft.issue, draft.enrichment)
             comments.append(
                 GitHubReviewComment(
                     path=draft.issue.location.path,
@@ -61,7 +59,7 @@ class ReviewCommentComposer:
                     start_side="RIGHT" if draft.start_line is not None else None,
                 )
             )
-            seen_signatures.setdefault(signature, self.issue_reference(draft.issue))
+            seen_signatures.add(signature)
         return comments
 
     @staticmethod
