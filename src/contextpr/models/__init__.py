@@ -14,14 +14,12 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class PullRequestRef:
-
     repository: str
     number: int
 
 
 @dataclass(frozen=True, slots=True)
 class IssueLocation:
-
     path: str
     line: int | None = None
     end_line: int | None = None
@@ -29,7 +27,6 @@ class IssueLocation:
 
 @dataclass(frozen=True, slots=True)
 class SonarIssue:
-
     key: str
     rule: str
     severity: str
@@ -44,7 +41,6 @@ class SonarIssue:
 
 @dataclass(frozen=True, slots=True)
 class PullRequestFile:
-
     path: str
     status: str
     patch: str | None = None
@@ -52,7 +48,6 @@ class PullRequestFile:
 
 @dataclass(frozen=True, slots=True)
 class GitHubReviewComment:
-
     path: str
     line: int
     body: str
@@ -63,7 +58,6 @@ class GitHubReviewComment:
 
 @dataclass(frozen=True, slots=True)
 class ExistingReviewComment:
-
     comment_id: int
     path: str
     line: int | None

@@ -152,4 +152,3 @@ def acquire_file_lock(
             if deadline is not None and time.monotonic() >= deadline:
                 raise RepositoryLockError("Timed out while waiting for repository lock.") from exc
             time.sleep(0.05)
-

@@ -67,38 +67,8 @@ class EvidenceBackedGuidance:
 
 
 @dataclass(frozen=True, slots=True)
-class IssueContextEvidence:
-    sample_size: int
-    same_rule_matches: int
-    same_scope_matches: int
-    same_path_family_matches: int
-    strong_match_count: int
-    dominant_maintenance: str | None
-    dominant_maintenance_share: float
-    maintenance_distribution: tuple[tuple[str, int], ...]
-    same_exact_path_matches: int = 0
-    same_rule_share: float = 0.0
-    same_path_family_share: float = 0.0
-    same_exact_path_share: float = 0.0
-    dominant_disposition: str | None = None
-    dominant_disposition_share: float = 0.0
-    disposition_distribution: tuple[tuple[str, int], ...] = ()
-    salient_terms: tuple[str, ...] = ()
-    resolved_share: float = 0.0
-    accepted_share: float = 0.0
-    persistent_share: float = 0.0
-    quick_fix_share: float = 0.0
-    median_resolution_days: float | None = None
-    fix_references: tuple[HistoricalFixReference, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class CombinedHistoricalContext:
     local_sonar: HistoricalEvidenceSummary | None = None
-    local_git: IssueContextEvidence | None = None
-    local_prs: IssueContextEvidence | None = None
-    local_review_comments: IssueContextEvidence | None = None
-    global_dataset: IssueContextEvidence | None = None
 
     def preferred_evidence(self) -> HistoricalEvidenceSummary | None:
         return self.local_sonar
@@ -108,8 +78,6 @@ class CombinedHistoricalContext:
             return "local_sonar"
         return None
 
-
-HistoricalContext = IssueContextEvidence
 
 FIX_REFERENCE_LOOKBACK_DAYS = 365
 FIX_REFERENCE_PR_LIMIT = 500

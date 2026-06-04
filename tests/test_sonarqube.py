@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -158,8 +159,8 @@ def test_sync_project_issue_history_persists_issues_and_checkpoint(
         },
     }
 
-    def fake_urlopen(request: object, **_kwargs: object) -> FakeResponse:
-        full_url = getattr(request, "full_url")
+    def fake_urlopen(request: Any, **_kwargs: object) -> FakeResponse:
+        full_url = request.full_url
         query = parse_qs(urlparse(full_url).query)
         page = query["p"][0]
         resolved = query["resolved"][0]
@@ -224,8 +225,8 @@ def test_sync_project_issue_history_stops_when_it_reaches_existing_checkpoint(
         def read(self) -> bytes:
             return json.dumps(self._payload).encode("utf-8")
 
-    def fake_urlopen(request: object, **_kwargs: object) -> FakeResponse:
-        full_url = getattr(request, "full_url")
+    def fake_urlopen(request: Any, **_kwargs: object) -> FakeResponse:
+        full_url = request.full_url
         query = parse_qs(urlparse(full_url).query)
         resolved = query["resolved"][0]
         requested_pages.append(f"{resolved}:{query['p'][0]}")

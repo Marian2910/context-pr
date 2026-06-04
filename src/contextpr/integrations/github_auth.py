@@ -83,7 +83,6 @@ def create_app_jwt(*, app_id: str, private_key: str) -> str:
 
 
 class GitHubAuth:
-
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._installation_token: str | None = None

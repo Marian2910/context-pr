@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin
@@ -90,7 +90,6 @@ class GitHubCommitSyncRecord:
 
 
 class GitHubClient:
-
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._auth = GitHubAuth(settings)
@@ -544,9 +543,7 @@ class GitHubClient:
         commit_message = self._optional_string(commit_info, "message")
         author_info = commit_info.get("author")
         authored_at = (
-            self._optional_string(author_info, "date")
-            if isinstance(author_info, Mapping)
-            else None
+            self._optional_string(author_info, "date") if isinstance(author_info, Mapping) else None
         )
         if commit_message is None or authored_at is None:
             return None

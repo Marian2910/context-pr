@@ -73,8 +73,7 @@ def main(
             is_eager=True,
         ),
     ] = None,
-) -> None:
-    ...
+) -> None: ...
 
 
 def _analyze_pull_request(
@@ -212,8 +211,7 @@ def init(
         typer.Option(
             "--configure-secrets/--no-configure-secrets",
             help=(
-                "Prompt for GitHub and Sonar credentials and write them to a "
-                "gitignored .env file."
+                "Prompt for GitHub and Sonar credentials and write them to a gitignored .env file."
             ),
         ),
     ] = True,
@@ -333,9 +331,7 @@ def _sync_history_command() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     if not settings.local_history_enabled:
-        raise typer.BadParameter(
-            "Local history sync requires CONTEXTPR_ENABLE_LOCAL_HISTORY=true."
-        )
+        raise typer.BadParameter("Local history sync requires CONTEXTPR_ENABLE_LOCAL_HISTORY=true.")
 
     settings.require(
         "github_repository",
@@ -615,8 +611,7 @@ def _configure_local_credentials(root: Path) -> None:
     _write_env_values(env_path, values)
     typer.echo(f"Wrote local secrets to {env_path}.")
     typer.echo(
-        "Wrote GitHub App private key to "
-        f"{root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
+        f"Wrote GitHub App private key to {root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
     )
 
 

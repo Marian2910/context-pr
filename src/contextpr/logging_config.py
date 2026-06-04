@@ -32,7 +32,6 @@ _RESERVED_LOG_RECORD_FIELDS = {
 
 
 class KeyValueFormatter(logging.Formatter):
-
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created, tz=UTC).isoformat()
         parts = [

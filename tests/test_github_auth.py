@@ -18,9 +18,7 @@ def test_github_auth_uses_installation_token(
         Settings(
             github_app_id="12345",
             github_installation_id="67890",
-            github_private_key=(
-                "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----"
-            ),
+            github_private_key=("-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----"),
             github_repository="octo/example",
         )
     )
@@ -61,9 +59,7 @@ def test_github_app_actor_login_uses_app_slug(monkeypatch: pytest.MonkeyPatch) -
         Settings(
             github_app_id="12345",
             github_installation_id="67890",
-            github_private_key=(
-                "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----"
-            ),
+            github_private_key=("-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----"),
             github_repository="octo/example",
         )
     )

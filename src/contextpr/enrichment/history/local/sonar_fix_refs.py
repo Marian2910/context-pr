@@ -37,11 +37,7 @@ def fix_references(
     top_k: int = 3,
 ) -> tuple[HistoricalFixReference, ...]:
     pull_requests = bounded_fix_reference_pull_requests(
-        [
-            pr
-            for pr in store.list_pull_requests(repository_key)
-            if pr.merged_at is not None
-        ]
+        [pr for pr in store.list_pull_requests(repository_key) if pr.merged_at is not None]
     )
     if not pull_requests:
         return ()
@@ -180,8 +176,7 @@ def bounded_fix_reference_pull_requests(
         pull_request for pull_request, merged_at in dated_pull_requests if merged_at >= cutoff
     ]
     count_window = [
-        pull_request
-        for pull_request, _merged_at in dated_pull_requests[:FIX_REFERENCE_PR_LIMIT]
+        pull_request for pull_request, _merged_at in dated_pull_requests[:FIX_REFERENCE_PR_LIMIT]
     ]
     if len(time_window) >= MIN_FIX_REFERENCE_WINDOW_PRS:
         return time_window[:FIX_REFERENCE_PR_LIMIT]
