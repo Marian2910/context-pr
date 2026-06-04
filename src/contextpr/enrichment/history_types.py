@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +14,56 @@ class HistoricalFixReference:
     resolved_at: str
     confidence: float
     evidence: tuple[str, ...]
+
+
+class HistoricalCaseType(StrEnum):
+    PREVIOUS_FIX = "previous_fix"
+    DEFERRED = "deferred"
+    PERSISTENT = "persistent"
+    REVIEW_CAREFULLY = "review_carefully"
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalIssueCase:
+    issue_key: str
+    rule: str
+    message: str
+    file_path: str
+    line: int | None
+    disposition: str | None
+    similarity_score: float
+    confidence: float
+    case_type: HistoricalCaseType
+    evidence: tuple[str, ...]
+    fix_reference: HistoricalFixReference | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalEvidenceSummary:
+    source_name: str
+    cases: tuple[HistoricalIssueCase, ...]
+    related_cases_count: int
+    close_cases_count: int
+    fixed_cases_count: int
+    accepted_cases_count: int
+    persistent_cases_count: int
+
+    def best_case(self) -> HistoricalIssueCase | None:
+        if not self.cases:
+            return None
+        return self.cases[0]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBackedGuidance:
+    decision: str
+    confidence: float
+    reason: str
+    case_type: HistoricalCaseType
+    case_key: str
+    precedent_url: str | None = None
+    precedent_pr_number: int | None = None
+    precedent_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,40 +94,16 @@ class IssueContextEvidence:
 
 @dataclass(frozen=True, slots=True)
 class CombinedHistoricalContext:
-    local_sonar: IssueContextEvidence | None = None
-    local_git: IssueContextEvidence | None = None
-    local_prs: IssueContextEvidence | None = None
-    local_review_comments: IssueContextEvidence | None = None
-    global_dataset: IssueContextEvidence | None = None
+    local_sonar: HistoricalEvidenceSummary | None = None
 
-    def preferred_evidence(self) -> IssueContextEvidence | None:
-        source = self.preferred_source_name()
-        if source == "local_sonar":
-            return self.local_sonar
-        if source == "local_git":
-            return self.local_git
-        if source == "local_prs":
-            return self.local_prs
-        if source == "local_review_comments":
-            return self.local_review_comments
-        if source == "global_dataset":
-            return self.global_dataset
-        return None
+    def preferred_evidence(self) -> HistoricalEvidenceSummary | None:
+        return self.local_sonar
 
     def preferred_source_name(self) -> str | None:
-        for source_name, source_evidence in (
-            ("local_sonar", self.local_sonar),
-            ("local_git", self.local_git),
-            ("local_prs", self.local_prs),
-            ("local_review_comments", self.local_review_comments),
-            ("global_dataset", self.global_dataset),
-        ):
-            if source_evidence is not None:
-                return source_name
+        if self.local_sonar is not None:
+            return "local_sonar"
         return None
 
-
-HistoricalContext = IssueContextEvidence
 
 FIX_REFERENCE_LOOKBACK_DAYS = 365
 FIX_REFERENCE_PR_LIMIT = 500

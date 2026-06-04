@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -15,7 +16,6 @@ runner = CliRunner()
 
 
 class FakeService:
-
     def analyze_pull_request(
         self,
         *,
@@ -71,16 +71,17 @@ def test_analyze_pr_command_reports_run_summary(
     assert "ContextPR analyzed PR #123" in result.stdout
 
 
-def _settings_env(**overrides: object) -> object:
-    return Settings(
-        github_app_id="12345",
-        github_installation_id="67890",
-        github_private_key="-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
-        github_repository="octo/example",
-        sonar_token="sonar-token",
-        sonar_project_key="contextpr",
-        **overrides,
-    )
+def _settings_env(**overrides: Any) -> object:
+    values: dict[str, Any] = {
+        "github_app_id": "12345",
+        "github_installation_id": "67890",
+        "github_private_key": "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+        "github_repository": "octo/example",
+        "sonar_token": "sonar-token",
+        "sonar_project_key": "contextpr",
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def test_analyze_requires_pr_number(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,9 +377,7 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     assert ".env" in (repo / ".gitignore").read_text(encoding="utf-8")
     assert "secrets/" in (repo / ".gitignore").read_text(encoding="utf-8")
     hook = repo / ".git" / "hooks" / "pre-commit"
-    assert "ContextPR refuses to commit local state or secrets" in hook.read_text(
-        encoding="utf-8"
-    )
+    assert "ContextPR refuses to commit local state or secrets" in hook.read_text(encoding="utf-8")
     env = (repo / ".env").read_text(encoding="utf-8")
     assert "# Existing app config" in env
     assert "EXISTING=value" in env

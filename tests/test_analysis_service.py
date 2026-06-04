@@ -1,10 +1,5 @@
-from contextpr.enrichment import (
-    CombinedHistoricalContext,
-    DeveloperGuidance,
-    GuidanceLevel,
-    HistoricalContext,
-    IssueEnrichment,
-)
+from contextpr.enrichment import EvidenceBackedGuidance, HistoricalCaseType
+from contextpr.enrichment.nlp import DeveloperGuidance, GuidanceLevel, IssueEnrichment
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -90,35 +85,10 @@ class FakeSonarClient:
 
 class FakeIssueEnricher:
     def enrich(self, issue: SonarIssue) -> IssueEnrichment:
-        return IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.DETAILED,
-                explanation="This is probably safe to simplify if the current structure is not intentional.",
-                next_step=(
-                    "Before simplifying the conditional, verify that the repeated "
-                    "branches are not intentionally preserving behavior or readability."
-                ),
-                evidence_note=(
-                    "Historically similar cases usually disappeared during later "
-                    "small refactors."
-                ),
-            ),
-            historical_context=CombinedHistoricalContext(
-                local_sonar=HistoricalContext(
-                    sample_size=6,
-                    same_rule_matches=3,
-                    same_scope_matches=6,
-                    same_path_family_matches=6,
-                    strong_match_count=4,
-                    dominant_maintenance="cleanup",
-                    dominant_maintenance_share=0.6667,
-                    maintenance_distribution=(("cleanup", 4), ("behavior", 2)),
-                )
-            ),
-        )
+        return _enrichment(case_key=issue.key)
 
 
-def test_analyze_pull_request_posts_only_eligible_comments() -> None:
+def test_analyze_pull_request_posts_compact_evidence_comment() -> None:
     github_client = FakeGitHubClient()
     service = AnalysisService(
         github_client=github_client,
@@ -136,16 +106,14 @@ def test_analyze_pull_request_posts_only_eligible_comments() -> None:
     assert result.deleted_comments == 1
     assert result.posted_comments == 1
     assert len(github_client.created_reviews) == 1
-    review_pull_request, comments = github_client.created_reviews[0]
-    assert review_pull_request == PullRequestRef(repository="octo/example", number=7)
+    comments = github_client.created_reviews[0][1]
     assert len(comments) == 1
     assert comments[0].start_line == 11
     assert comments[0].line == 12
-    assert "Sonar reported" not in comments[0].body
     assert "First issue." in comments[0].body
-    assert "This is probably safe to simplify if the current structure is not intentional." not in comments[0].body
-    assert "Before simplifying the conditional, verify that the repeated branches are not intentionally preserving behavior or readability." not in comments[0].body
-    assert "Historically similar cases usually disappeared during later small refactors." in comments[0].body
+    assert "ContextPR: likely worth fixing now · 86% confidence" in comments[0].body
+    assert "Closest precedent:" in comments[0].body
+    assert "appeared multiple times" not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
 
@@ -167,6 +135,40 @@ def test_analyze_pull_request_skips_publish_on_dry_run() -> None:
     assert result.posted_comments == 0
     assert github_client.created_reviews == []
     assert github_client.deleted_comment_ids == []
+
+
+def test_drafts_to_comments_skips_repeated_evidence() -> None:
+    issue = SonarIssue(
+        key="issue-1",
+        rule="python:S100",
+        severity="MAJOR",
+        message="First issue",
+        location=IssueLocation(path="src/app.py", line=11),
+        issue_type="CODE_SMELL",
+    )
+    duplicate = SonarIssue(
+        key="issue-2",
+        rule="python:S100",
+        severity="MAJOR",
+        message="Second issue",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
+    composer = ReviewCommentComposer()
+    first_draft = composer.issue_to_draft(issue, {11, 12}, _enrichment(case_key="same-case"))
+    second_draft = composer.issue_to_draft(
+        duplicate,
+        {11, 12},
+        _enrichment(case_key="same-case"),
+    )
+    assert first_draft is not None
+    assert second_draft is not None
+
+    comments = composer.drafts_to_comments([first_draft, second_draft])
+
+    assert len(comments) == 2
+    assert "ContextPR:" in comments[0].body
+    assert comments[1].body.startswith("Same as in [src/app.py:11].")
 
 
 def test_issue_to_draft_falls_back_to_single_line_when_range_is_not_fully_added() -> None:
@@ -208,167 +210,18 @@ def test_extract_added_lines_returns_empty_set_for_invalid_patch() -> None:
     assert AnalysisService._extract_added_lines("not a hunk") == set()
 
 
-def test_reviewer_note_handles_minimal_and_single_sentence_guidance() -> None:
-    minimal_note = AnalysisService._reviewer_note(
-        SonarIssue(
-            key="issue-minimal",
-            rule="python:S1481",
-            severity="MINOR",
-            message='Remove the unused local variable "name".',
-            location=IssueLocation(path="src/app.py", line=11),
-        ),
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.MINIMAL,
-                evidence_note="Historically similar cases usually disappeared during later small refactors.",
+def _enrichment(case_key: str) -> IssueEnrichment:
+    return IssueEnrichment(
+        guidance=DeveloperGuidance(
+            level=GuidanceLevel.CONTEXTUAL,
+            evidence=EvidenceBackedGuidance(
+                decision="likely worth fixing now",
+                confidence=0.86,
+                reason="4 of 5 close historical matches for `python:S100` were fixed.",
+                case_type=HistoricalCaseType.PREVIOUS_FIX,
+                case_key=case_key,
+                precedent_url="https://github.com/org/repo/pull/9/files",
             ),
-            historical_context=None,
         ),
+        historical_context=None,
     )
-    single_sentence_note = AnalysisService._reviewer_note(
-        SonarIssue(
-            key="issue-detailed",
-            rule="python:S1515",
-            severity="MAJOR",
-            message="Loop variable capture",
-            location=IssueLocation(path="src/app.py", line=20),
-            issue_type="CODE_SMELL",
-        ),
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.DETAILED,
-                explanation="Treat this as behavior-sensitive cleanup and keep the current outcome intact while simplifying it.",
-            ),
-            historical_context=None,
-        ),
-    )
-
-    assert minimal_note == (
-        'Remove the unused local variable "name".\n\n'
-        "Historically similar cases usually disappeared during later small refactors."
-    )
-    assert single_sentence_note == (
-        "Loop variable capture.\n\n"
-        "Treat this as behavior-sensitive cleanup and keep the current outcome intact while simplifying it."
-    )
-
-
-def test_reviewer_note_deduplicates_overlapping_guidance_sections() -> None:
-    note = AnalysisService._reviewer_note(
-        SonarIssue(
-            key="issue-loop",
-            rule="python:S1515",
-            severity="MAJOR",
-            message="Loop variable capture",
-            location=IssueLocation(path="src/app.py", line=20),
-            issue_type="CODE_SMELL",
-        ),
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.DETAILED,
-                explanation=(
-                    "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it."
-                ),
-                next_step=(
-                    "Simplify it only after you make the behavior-carrying state explicit and verify the affected path."
-                ),
-            ),
-            historical_context=None,
-        ),
-    )
-
-    assert note == (
-        "Loop variable capture.\n\n"
-        "This cleanup touches control flow or captured state, so confirm the current behavior before simplifying it."
-    )
-
-
-def test_reviewer_note_falls_back_to_issue_message_when_guidance_sections_are_empty() -> None:
-    issue = SonarIssue(
-        key="issue-empty",
-        rule="python:S9999",
-        severity="MINOR",
-        message="Use a clearer name.",
-        location=IssueLocation(path="src/app.py", line=9),
-    )
-
-    note = AnalysisService._reviewer_note(
-        issue,
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.CONTEXTUAL,
-                explanation="   ",
-                next_step=None,
-                evidence_note=None,
-            ),
-            historical_context=None,
-        ),
-    )
-
-    assert note == "Use a clearer name."
-
-
-def test_reviewer_note_uses_duplicate_reference_for_repeated_guidance() -> None:
-    issue = SonarIssue(
-        key="issue-repeat",
-        rule="python:S3776",
-        severity="CRITICAL",
-        message="Refactor this function to reduce its Cognitive Complexity from 28 to the 15 allowed.",
-        location=IssueLocation(path="src/uploads.py", line=52),
-        issue_type="CODE_SMELL",
-    )
-
-    note = AnalysisService._reviewer_note(
-        issue,
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.DETAILED,
-                explanation="Check what behavior this code is preserving before you refactor it.",
-                next_step="Validate the code path against the expected behavior before changing it.",
-            ),
-            historical_context=None,
-        ),
-        duplicate_reference="src/uploads.py:31",
-    )
-
-    assert note == "Same as in [src/uploads.py:31]."
-
-
-def test_reviewer_note_uses_duplicate_reference_for_repeated_minimal_guidance() -> None:
-    issue = SonarIssue(
-        key="issue-repeat-minimal",
-        rule="python:S1481",
-        severity="MINOR",
-        message='Remove the unused local variable "name".',
-        location=IssueLocation(path="src/app.py", line=14),
-        issue_type="CODE_SMELL",
-    )
-
-    note = AnalysisService._reviewer_note(
-        issue,
-        IssueEnrichment(
-            guidance=DeveloperGuidance(
-                level=GuidanceLevel.MINIMAL,
-                evidence_note="Historically similar cases were usually fixed.",
-            ),
-            historical_context=None,
-        ),
-        duplicate_reference="src/app.py:8",
-    )
-
-    assert note == "Same as in [src/app.py:8]."
-
-
-def test_comment_start_line_and_hunk_parser_handle_invalid_ranges() -> None:
-    assert AnalysisService._comment_start_line(
-        SonarIssue(
-            key="issue-range-none",
-            rule="python:S100",
-            severity="MAJOR",
-            message="Invalid range",
-            location=IssueLocation(path="src/app.py", line=10, end_line=10),
-        ),
-        changed_lines={10},
-    ) is None
-    assert AnalysisService._parse_hunk_new_start("@@ invalid @@") is None
-    assert AnalysisService._parse_hunk_new_start("@@ -1,2 -3,4 @@") is None
