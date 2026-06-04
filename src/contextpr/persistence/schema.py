@@ -182,6 +182,4 @@ def _ensure_column(
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     if any(str(row["name"]) == column_name for row in rows):
         return
-    connection.execute(
-        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
-    )
+    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")

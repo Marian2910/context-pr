@@ -11,8 +11,8 @@ from contextpr.config import Settings
 from contextpr.integrations.github import (
     LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
     LOCAL_GITHUB_SYNC_SOURCE,
-    GitHubCommitHistorySyncResult,
     GitHubClient,
+    GitHubCommitHistorySyncResult,
     GitHubHistorySyncResult,
 )
 from contextpr.models import GitHubReviewComment, PullRequestRef
@@ -20,7 +20,6 @@ from contextpr.persistence import HistoryStore, SyncStateRecord
 
 
 class FakeResponse:
-
     def __init__(self, payload: object | None = None) -> None:
         self._payload = payload
 
@@ -211,7 +210,7 @@ def test_sync_repository_history_persists_pull_requests_files_and_review_comment
                     "line": 8,
                     "body": "ContextPR note\n\n<!-- contextpr:issue=issue-1 -->",
                     "user": {"login": "contextpr-app[bot]"},
-                }
+                },
             ]
         return []
 
@@ -231,8 +230,7 @@ def test_sync_repository_history_persists_pull_requests_files_and_review_comment
         "src/app.py"
     ]
     assert [
-        comment.comment_id
-        for comment in store.list_pull_request_review_comments("octo/example", 7)
+        comment.comment_id for comment in store.list_pull_request_review_comments("octo/example", 7)
     ] == [10]
     checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_SYNC_SOURCE)
     assert checkpoint is not None
@@ -282,7 +280,9 @@ def test_sync_repository_history_stops_when_it_reaches_existing_checkpoint(
     )
 
     assert result.pull_requests_upserted == 1
-    assert [pull_request.pr_number for pull_request in store.list_pull_requests("octo/example")] == [8]
+    assert [
+        pull_request.pr_number for pull_request in store.list_pull_requests("octo/example")
+    ] == [8]
     checkpoint = store.get_sync_state("octo/example", LOCAL_GITHUB_SYNC_SOURCE)
     assert checkpoint is not None
     assert checkpoint.cursor == "2026-05-16T10:30:00Z"
@@ -329,7 +329,10 @@ def test_sync_commit_history_persists_commits_touches_and_checkpoint(
     assert result.commits_upserted == 2
     assert result.touches_recorded == 2
     assert result.latest_commit_sha == "sha-2"
-    assert [commit.commit_sha for commit in store.list_git_commits("octo/example")] == ["sha-2", "sha-1"]
+    assert [commit.commit_sha for commit in store.list_git_commits("octo/example")] == [
+        "sha-2",
+        "sha-1",
+    ]
     assert [touch.file_path for touch in store.list_git_file_touches("octo/example")] == [
         "src/other.py",
         "src/app.py",
@@ -404,11 +407,14 @@ def test_sync_pull_request_record_returns_none_when_payload_is_invalid(
     store = HistoryStore(tmp_path / "history.db")
     client = _client()
 
-    assert client._sync_pull_request_record(
-        store,
-        "octo/example",
-        {"updated_at": "2026-05-16T10:00:00Z"},
-    ) is None
+    assert (
+        client._sync_pull_request_record(
+            store,
+            "octo/example",
+            {"updated_at": "2026-05-16T10:00:00Z"},
+        )
+        is None
+    )
 
 
 def _client() -> GitHubClient:

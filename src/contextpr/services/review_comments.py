@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from contextpr.enrichment import IssueEnrichment
 from contextpr.models import GitHubReviewComment, SonarIssue
@@ -102,31 +102,42 @@ class ReviewCommentComposer:
         if duplicate_reference is not None:
             return f"Same as in [{duplicate_reference}]."
 
-        guidance = enrichment.guidance
-        if guidance.level is guidance.level.MINIMAL:
-            sections = [issue.message]
-            if guidance.evidence_note is not None:
-                sections.append(guidance.evidence_note)
-            return "\n\n".join(sections)
+        evidence = enrichment.guidance.evidence
+        confidence = round(evidence.confidence * 100)
+        if (
+            evidence.precedent_url is not None
+            and evidence.precedent_pr_number is not None
+            and evidence.confidence >= 0.9
+        ):
+            return self.detailed_precedent_note(issue, enrichment)
 
-        sections = self.deduplicated_sections(
-            self.issue_anchor(issue, guidance.level),
-            guidance.explanation,
-            guidance.next_step,
-            guidance.evidence_note,
+        sections = [
+            self.normalize_sentence(issue.message),
+            (
+                f"ContextPR: {evidence.decision} · {confidence}% confidence  \n"
+                f"Reason: {evidence.reason}"
+            ),
+        ]
+        if evidence.precedent_url is not None:
+            sections.append(f"Closest precedent:\n{evidence.precedent_url}")
+        return "\n\n".join(sections)
+
+    def detailed_precedent_note(self, issue: SonarIssue, enrichment: IssueEnrichment) -> str:
+        evidence = enrichment.guidance.evidence
+        confidence = round(evidence.confidence * 100)
+        evidence_lines = "\n".join(f"- {item}" for item in evidence.precedent_evidence)
+        return "\n\n".join(
+            (
+                self.normalize_sentence(issue.message),
+                (
+                    "A similar fixed case is linked to "
+                    f"PR #{evidence.precedent_pr_number}, with {confidence}% "
+                    "confidence from Sonar resolution history."
+                ),
+                f"Why this match is shown:\n\n{evidence_lines}",
+                f"Previous fix:\n{evidence.precedent_url}",
+            )
         )
-        if not sections:
-            return issue.message
-        if guidance.evidence_note is not None:
-            selected_sections: list[str] = []
-            for section in sections:
-                if section == guidance.evidence_note:
-                    continue
-                selected_sections.append(section)
-                break
-            selected_sections.append(guidance.evidence_note)
-            return "\n\n".join(selected_sections)
-        return "\n\n".join(sections[:2])
 
     @staticmethod
     def issue_anchor(issue: SonarIssue, guidance_level: object) -> str | None:
@@ -159,9 +170,10 @@ class ReviewCommentComposer:
         normalized_parts = [
             issue.rule,
             guidance.level.value,
-            self.normalize_section(guidance.explanation),
-            self.normalize_section(guidance.next_step),
-            self.normalize_section(guidance.evidence_note),
+            guidance.evidence.decision,
+            guidance.evidence.case_type.value,
+            guidance.evidence.case_key,
+            self.normalize_section(guidance.evidence.precedent_url),
         ]
         return "|".join(normalized_parts)
 

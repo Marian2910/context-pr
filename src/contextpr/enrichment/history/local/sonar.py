@@ -2,20 +2,17 @@ from __future__ import annotations
 
 import contextpr.enrichment.history.local.sonar_fix_refs as sonar_fix_refs
 import contextpr.enrichment.history.local.sonar_scoring as sonar_scoring
-from contextpr.enrichment.history.constants import MIN_RETRIEVAL_SCORE, STRONG_MATCH_SCORE
+from contextpr.enrichment.history.constants import MIN_RETRIEVAL_SCORE
 from contextpr.enrichment.history.types import (
+    LOCAL_SONAR_SCORE_SCALE,
+    HistoricalCaseType,
+    HistoricalEvidenceSummary,
     HistoricalFixReference,
-    IssueContextEvidence,
+    HistoricalIssueCase,
 )
 from contextpr.enrichment.history.utils import (
     component_path,
-    distribution,
-    distribution_share,
-    dominant_share,
     path_family,
-    path_scope,
-    salient_terms,
-    share,
 )
 from contextpr.models import SonarIssue
 from contextpr.persistence import (
@@ -37,7 +34,7 @@ class LocalSonarHistoryRetriever:
         issue: SonarIssue,
         *,
         top_k: int = 25,
-    ) -> IssueContextEvidence | None:
+    ) -> HistoricalEvidenceSummary | None:
         stored_issues = self._list_sonar_issues()
         if not stored_issues:
             return None
@@ -56,9 +53,8 @@ class LocalSonarHistoryRetriever:
             ),
             reverse=True,
         )
-        similar = [record for record, _score in scored[:top_k]]
-        evidence = self._summarize_matches(issue, similar)
-        if not self._has_strong_local_signal(evidence):
+        evidence = self._summarize_matches(issue, scored[:top_k])
+        if not evidence.cases:
             return None
         return evidence
 
@@ -70,86 +66,149 @@ class LocalSonarHistoryRetriever:
     def _summarize_matches(
         self,
         issue: SonarIssue,
-        similar: list[SonarIssueRecord],
-    ) -> IssueContextEvidence:
-        issue_scope = path_scope(issue.location.path)
+        similar: list[tuple[SonarIssueRecord, float]],
+    ) -> HistoricalEvidenceSummary:
         issue_family = path_family(issue.location.path)
         issue_path = issue.location.path
-        same_scope_matches = 0
-        same_path_family_matches = 0
-        same_exact_path_matches = 0
-        for record in similar:
-            record_path = component_path(record.component)
-            if path_scope(record_path) == issue_scope:
-                same_scope_matches += 1
-            if issue_family and path_family(record_path) == issue_family:
-                same_path_family_matches += 1
-            if record_path == issue_path:
-                same_exact_path_matches += 1
-        sample_size = len(similar)
-        same_rule_matches = sum(1 for record in similar if record.rule == issue.rule)
-        strong_match_count = sum(
-            1
-            for record in similar
-            if self._score_record(issue, record) >= STRONG_MATCH_SCORE
+        records = [record for record, _score in similar]
+        fix_references = self._fix_references(issue, records)
+        cases = tuple(
+            sorted(
+                (
+                    self._historical_case(issue, record, score, fix_references)
+                    for record, score in similar
+                ),
+                key=lambda case: (
+                    case.confidence,
+                    case.fix_reference is not None,
+                    case.similarity_score,
+                ),
+                reverse=True,
+            )
         )
-        disposition_distribution = distribution(
-            disposition
-            for disposition in (self._disposition_bucket(record) for record in similar)
-            if disposition is not None
-        )
-        dominant_disposition, dominant_disposition_share = dominant_share(
-            disposition_distribution,
-            sample_size=sum(count for _, count in disposition_distribution),
-        )
-        issue_salient_terms = salient_terms(
-            issue,
-            [f"{record.message} {record.component}" for record in similar],
-        )
-        resolution_days = [
-            days
-            for record in similar
-            if (days := self._resolution_days(record)) is not None
-        ]
-        quick_fix_share = (
-            round(sum(1 for days in resolution_days if days <= 7.0) / len(resolution_days), 4)
-            if resolution_days
-            else 0.0
-        )
-        return IssueContextEvidence(
-            sample_size=sample_size,
-            same_rule_matches=same_rule_matches,
-            same_scope_matches=same_scope_matches,
-            same_path_family_matches=same_path_family_matches,
-            same_exact_path_matches=same_exact_path_matches,
-            strong_match_count=strong_match_count,
-            dominant_maintenance=None,
-            dominant_maintenance_share=0.0,
-            maintenance_distribution=(),
-            same_rule_share=share(same_rule_matches, sample_size),
-            same_path_family_share=share(same_path_family_matches, sample_size),
-            same_exact_path_share=share(same_exact_path_matches, sample_size),
-            dominant_disposition=dominant_disposition,
-            dominant_disposition_share=dominant_disposition_share,
-            disposition_distribution=disposition_distribution,
-            salient_terms=issue_salient_terms,
-            resolved_share=distribution_share(disposition_distribution, "resolved"),
-            accepted_share=distribution_share(disposition_distribution, "accepted"),
-            persistent_share=distribution_share(disposition_distribution, "persistent"),
-            quick_fix_share=quick_fix_share,
-            median_resolution_days=self._median_resolution_days(resolution_days),
-            fix_references=self._fix_references(issue, similar),
+        return HistoricalEvidenceSummary(
+            source_name="local_sonar",
+            cases=cases,
+            related_cases_count=len(records),
+            close_cases_count=sum(
+                1
+                for case in cases
+                if case.rule == issue.rule
+                and (
+                    case.file_path == issue_path
+                    or (issue_family and path_family(case.file_path) == issue_family)
+                )
+            ),
+            fixed_cases_count=sum(1 for case in cases if case.disposition == "resolved"),
+            accepted_cases_count=sum(1 for case in cases if case.disposition == "accepted"),
+            persistent_cases_count=sum(1 for case in cases if case.disposition == "persistent"),
         )
 
     @staticmethod
-    def _has_strong_local_signal(evidence: IssueContextEvidence) -> bool:
-        if evidence.sample_size < 2:
-            return False
-        if evidence.same_rule_share >= 0.6 and evidence.strong_match_count >= 2:
-            return True
-        if evidence.same_exact_path_matches >= 2:
-            return True
-        return evidence.same_path_family_matches >= 3 and evidence.same_path_family_share >= 0.6
+    def _has_strong_local_signal(evidence: HistoricalEvidenceSummary) -> bool:
+        return evidence.best_case() is not None
+
+    def _historical_case(
+        self,
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        score: float,
+        fix_references: tuple[HistoricalFixReference, ...],
+    ) -> HistoricalIssueCase:
+        record_path = component_path(record.component)
+        disposition = self._disposition_bucket(record)
+        fix_reference = self._fix_reference_for_case(record, fix_references)
+        case_type = self._case_type(issue, disposition, fix_reference)
+        confidence = self._case_confidence(issue, record, score, disposition, fix_reference)
+        return HistoricalIssueCase(
+            issue_key=record.issue_key,
+            rule=record.rule,
+            message=record.message,
+            file_path=record_path,
+            line=record.line,
+            disposition=disposition,
+            similarity_score=round(min(score / LOCAL_SONAR_SCORE_SCALE, 1.0), 4),
+            confidence=confidence,
+            case_type=case_type,
+            evidence=self._case_evidence(issue, record, disposition, fix_reference),
+            fix_reference=fix_reference,
+        )
+
+    @staticmethod
+    def _fix_reference_for_case(
+        record: SonarIssueRecord,
+        fix_references: tuple[HistoricalFixReference, ...],
+    ) -> HistoricalFixReference | None:
+        record_path = component_path(record.component)
+        for reference in fix_references:
+            if reference.file_path == record_path:
+                return reference
+        return None
+
+    @staticmethod
+    def _case_type(
+        issue: SonarIssue,
+        disposition: str | None,
+        fix_reference: HistoricalFixReference | None,
+    ) -> HistoricalCaseType:
+        if issue.issue_type == "BUG":
+            return HistoricalCaseType.REVIEW_CAREFULLY
+        if disposition == "accepted":
+            return HistoricalCaseType.DEFERRED
+        if disposition == "persistent":
+            return HistoricalCaseType.PERSISTENT
+        if disposition == "resolved" or fix_reference is not None:
+            return HistoricalCaseType.PREVIOUS_FIX
+        return HistoricalCaseType.PERSISTENT
+
+    @staticmethod
+    def _case_confidence(
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        score: float,
+        disposition: str | None,
+        fix_reference: HistoricalFixReference | None,
+    ) -> float:
+        if fix_reference is not None:
+            return fix_reference.confidence
+        record_path = component_path(record.component)
+        confidence = 0.45 * min(score / LOCAL_SONAR_SCORE_SCALE, 1.0)
+        if record.rule == issue.rule:
+            confidence += 0.2
+        if record_path == issue.location.path:
+            confidence += 0.2
+        elif path_family(record_path) == path_family(issue.location.path):
+            confidence += 0.12
+        if disposition in {"resolved", "accepted", "persistent"}:
+            confidence += 0.1
+        if record.line is not None:
+            confidence += 0.05
+        return round(min(confidence, 1.0), 2)
+
+    @staticmethod
+    def _case_evidence(
+        issue: SonarIssue,
+        record: SonarIssueRecord,
+        disposition: str | None,
+        fix_reference: HistoricalFixReference | None,
+    ) -> tuple[str, ...]:
+        evidence: list[str] = []
+        if record.rule == issue.rule:
+            evidence.append(f"same rule `{record.rule}`")
+        record_path = component_path(record.component)
+        if record_path == issue.location.path:
+            evidence.append("same file")
+        elif path_family(record_path) == path_family(issue.location.path):
+            evidence.append("same module")
+        if disposition == "resolved":
+            evidence.append("historical case was fixed")
+        elif disposition == "accepted":
+            evidence.append("historical case was accepted/deferred")
+        elif disposition == "persistent":
+            evidence.append("historical case remained open")
+        if fix_reference is not None:
+            evidence.append(f"linked to PR #{fix_reference.pr_number}")
+        return tuple(evidence)
 
     @staticmethod
     def _score_record(issue: SonarIssue, record: SonarIssueRecord) -> float:

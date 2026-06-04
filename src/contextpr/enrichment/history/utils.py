@@ -98,7 +98,9 @@ def salient_terms(
     *,
     top_k: int = 3,
 ) -> tuple[str, ...]:
-    issue_terms = set(content_tokens(issue.message) + content_tokens(issue.location.path) + tuple(issue.tags))
+    issue_terms = set(
+        content_tokens(issue.message) + content_tokens(issue.location.path) + tuple(issue.tags)
+    )
     if not issue_terms or not documents:
         return ()
 

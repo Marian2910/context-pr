@@ -79,8 +79,7 @@ def extract_issue_fields(
     issue_type = payload.get("type")
 
     if not all(
-        isinstance(value, str)
-        for value in (issue_key, rule, severity, message, issue_type)
+        isinstance(value, str) for value in (issue_key, rule, severity, message, issue_type)
     ):
         return None
 

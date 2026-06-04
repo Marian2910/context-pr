@@ -14,7 +14,7 @@ def test_action_entrypoint_reads_input_names(tmp_path: Path) -> None:
         "\n".join(
             [
                 "#!/bin/sh",
-                'python3 - "$@" <<\'PY\'',
+                "python3 - \"$@\" <<'PY'",
                 "import json",
                 "import os",
                 "from pathlib import Path",
@@ -68,7 +68,7 @@ def test_action_entrypoint_falls_back_to_contextpr_env_vars(tmp_path: Path) -> N
         "\n".join(
             [
                 "#!/bin/sh",
-                'python3 - "$@" <<\'PY\'',
+                "python3 - \"$@\" <<'PY'",
                 "import json",
                 "import os",
                 "from pathlib import Path",

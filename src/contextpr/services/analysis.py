@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Protocol, cast
 
 from contextpr.enrichment import IssueEnrichment
 from contextpr.models import (
@@ -10,7 +11,6 @@ from contextpr.models import (
     PullRequestRef,
     SonarIssue,
 )
-from dataclasses import dataclass
 from contextpr.services.review_comments import COMMENT_MARKER_PREFIX, ReviewCommentComposer
 
 
@@ -25,41 +25,33 @@ class AnalysisResult:
 
 
 class GitHubAnalysisClient(Protocol):
-    def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
-        ...
+    def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]: ...
 
     def create_review(
         self,
         *,
         pull_request: PullRequestRef,
         comments: list[GitHubReviewComment],
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def list_existing_review_comments(
         self,
         pull_request: PullRequestRef,
-    ) -> list[ExistingReviewComment]:
-        ...
+    ) -> list[ExistingReviewComment]: ...
 
-    def delete_review_comment(self, comment_id: int) -> None:
-        ...
+    def delete_review_comment(self, comment_id: int) -> None: ...
 
-    def get_authenticated_user_login(self) -> str:
-        ...
+    def get_authenticated_user_login(self) -> str: ...
 
 
 class SonarAnalysisClient(Protocol):
-    def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]:
-        ...
+    def fetch_pull_request_issues(self, pull_request_number: int) -> list[SonarIssue]: ...
 
 
 class IssueEnrichmentClient(Protocol):
-    def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
-        ...
+    def enrich(self, issue: SonarIssue) -> IssueEnrichment | None: ...
 
-    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
-        ...
+    def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]: ...
 
 
 class AnalysisService:
@@ -83,8 +75,7 @@ class AnalysisService:
     ) -> AnalysisResult:
         pull_request_files = self._github_client.get_pull_request_files(pull_request)
         changed_lines_by_file = {
-            pr_file.path: self._extract_added_lines(pr_file.patch)
-            for pr_file in pull_request_files
+            pr_file.path: self._extract_added_lines(pr_file.patch) for pr_file in pull_request_files
         }
         issues = self._sonar_client.fetch_pull_request_issues(pull_request.number)
         enrichments = self._enrich_issues(issues)
@@ -185,8 +176,7 @@ class AnalysisService:
         managed_comments = [
             comment
             for comment in existing_comments
-            if comment.author_login == author_login
-            and COMMENT_MARKER_PREFIX in comment.body
+            if comment.author_login == author_login and COMMENT_MARKER_PREFIX in comment.body
         ]
 
         for comment in managed_comments:
@@ -199,7 +189,7 @@ class AnalysisService:
             return {}
         enrich_many = getattr(self._issue_enricher, "enrich_many", None)
         if callable(enrich_many):
-            return enrich_many(issues)
+            return cast(dict[str, IssueEnrichment | None], enrich_many(issues))
         return {issue.key: self._issue_enricher.enrich(issue) for issue in issues}
 
     @staticmethod

@@ -22,6 +22,12 @@ from contextpr.integrations.sonarqube_types import (
 from contextpr.models import SonarIssue
 from contextpr.persistence import HistoryStore, SonarIssueRecord
 
+__all__ = [
+    "LOCAL_SONAR_SYNC_SOURCE",
+    "SonarProjectHistorySyncResult",
+    "SonarQubeClient",
+]
+
 
 class SonarQubeClient:
     def __init__(self, settings: Settings) -> None:

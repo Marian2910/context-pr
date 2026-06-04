@@ -77,6 +77,8 @@ def test_github_token_enables_github_auth() -> None:
     assert settings.github_token_enabled is True
     assert settings.github_auth_mode == "token"
     assert settings.github_enabled is True
+
+
 def test_local_history_flag_can_be_enabled_from_env() -> None:
     settings = Settings.from_env({"CONTEXTPR_ENABLE_LOCAL_HISTORY": "true"})
 

@@ -50,8 +50,7 @@ class Settings:
         local_config = _read_local_config()
         return cls(
             github_token=(
-                _read_optional(env, "CONTEXTPR_GITHUB_TOKEN")
-                or _read_optional(env, "GITHUB_TOKEN")
+                _read_optional(env, "CONTEXTPR_GITHUB_TOKEN") or _read_optional(env, "GITHUB_TOKEN")
             ),
             github_app_id=_read_optional(env, "CONTEXTPR_GITHUB_APP_ID"),
             github_installation_id=_read_optional(env, "CONTEXTPR_GITHUB_INSTALLATION_ID"),
@@ -116,17 +115,12 @@ class Settings:
     @property
     def github_enabled(self) -> bool:
         return bool(
-            (self.github_app_enabled or self.github_token_enabled)
-            and self.github_repository
+            (self.github_app_enabled or self.github_token_enabled) and self.github_repository
         )
 
     @property
     def github_app_enabled(self) -> bool:
-        return bool(
-            self.github_app_id
-            and self.github_installation_id
-            and self.github_private_key
-        )
+        return bool(self.github_app_id and self.github_installation_id and self.github_private_key)
 
     @property
     def github_token_enabled(self) -> bool:

@@ -1,60 +1,44 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
-from contextpr.enrichment.guidance import GuidanceBuilder
-from contextpr.enrichment.history import CombinedHistoricalContext, HistoricalContext
-from contextpr.enrichment.intent import (
-    CommentIntent,
-    comment_intent,
-    has_fix_signal,
-    history_driven_intent_for,
-    should_defer_from_history,
-    should_fix_from_history,
-    should_fix_local_code_smell,
-    should_mark_history_recurrence,
-    uses_history_for_guidance,
-    uses_non_local_history,
-)
-from contextpr.enrichment.language_profile import (
-    IssueLanguageProfile,
-    content_terms,
-    is_behavior_risk,
-    is_self_explanatory,
-    issue_language_profile,
-    self_explanatory_score,
-)
-from contextpr.enrichment.messages import DeterministicGuidanceMessageService
-from contextpr.enrichment.models import (
-    DeveloperGuidance as DeveloperGuidance,
-)
-from contextpr.enrichment.models import (
-    GuidanceLevel as GuidanceLevel,
-)
-from contextpr.enrichment.models import (
-    IssueEnrichment as IssueEnrichment,
-)
-from contextpr.enrichment.retrievers import (
-    HistoryRetrieverSet,
-    actionable_or_none,
-    active_history,
-    active_source,
-    build_history_retriever,
-    retrieved_context,
-)
-from contextpr.enrichment.signals import (
-    ContextSignals,
-    context_signals,
-    fix_tendency_high,
-    has_actionable_history,
-    has_grounded_history,
-    persistence_high,
-    quick_fix_tendency_high,
-    small_effort,
+from contextpr.enrichment.history import (
+    CombinedHistoricalContext,
+    EvidenceBackedGuidance,
+    HistoricalCaseType,
+    HistoricalEvidenceSummary,
+    HistoricalIssueCase,
+    LocalSonarHistoryRetriever,
 )
 from contextpr.models import SonarIssue
 from contextpr.persistence import HistoryStore
+
+MIN_ENRICHMENT_CONFIDENCE = 0.70
+
+
+class CaseHistoryRetriever(Protocol):
+    def find_context(self, issue: SonarIssue) -> HistoricalEvidenceSummary | None: ...
+
+
+class GuidanceLevel(StrEnum):
+    NONE = "none"
+    CONTEXTUAL = "contextual"
+
+
+@dataclass(frozen=True, slots=True)
+class DeveloperGuidance:
+    level: GuidanceLevel
+    evidence: EvidenceBackedGuidance
+
+
+@dataclass(frozen=True, slots=True)
+class IssueEnrichment:
+    guidance: DeveloperGuidance
+    historical_context: CombinedHistoricalContext | None
 
 
 class IssueEnricher:
@@ -67,252 +51,127 @@ class IssueEnricher:
         history_store: HistoryStore | None = None,
         repository_key: str | None = None,
     ) -> None:
-        self._message_service = DeterministicGuidanceMessageService()
-        self._guidance_builder = GuidanceBuilder(self._message_service)
-        self._history_retrievers = HistoryRetrieverSet.build(
-            dataset_path,
+        _ = dataset_path, enable_local_git_history
+        self._enable_local_history = enable_local_history
+        self._local_history_retriever: CaseHistoryRetriever | None = self._build_history_retriever(
+            LocalSonarHistoryRetriever,
             enable_local_history=enable_local_history,
-            enable_local_git_history=enable_local_git_history,
             history_store=history_store,
             repository_key=repository_key,
         )
 
     def enrich(self, issue: SonarIssue) -> IssueEnrichment | None:
-        if self._history_retrievers.requires_configured_local_store():
+        if self._enable_local_history and self._local_history_retriever is None:
             raise NotImplementedError(
                 "Local repository history mode requires a configured repository store."
             )
 
         historical_context = self._historical_context(issue)
-        active_context = self._active_history(historical_context)
-        active_context_source = self._active_source(historical_context)
-        language_profile = self._issue_language_profile(issue, active_context)
-        signals = self._context_signals(
-            issue,
-            active_context,
-            active_context_source,
-            language_profile,
-        )
-        intent = self._comment_intent(issue, signals)
-        if intent is CommentIntent.NONE:
+        summary = historical_context.preferred_evidence()
+        if summary is None:
             return None
 
-        guidance = self._build_guidance(
-            issue,
-            intent,
-            signals,
-            active_context,
-            active_context_source,
-        )
+        guidance = self._build_guidance(issue, summary)
+        if guidance is None:
+            return None
         return IssueEnrichment(guidance=guidance, historical_context=historical_context)
 
     def enrich_many(self, issues: list[SonarIssue]) -> dict[str, IssueEnrichment | None]:
         return {issue.key: self.enrich(issue) for issue in issues}
 
     def _historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
-        return self._history_retrievers.historical_context(issue)
+        if not self._enable_local_history or self._local_history_retriever is None:
+            return CombinedHistoricalContext()
 
-    def _retrieved_context(
-        self,
-        retriever: object,
-        issue: SonarIssue,
-    ) -> HistoricalContext | None:
-        return retrieved_context(retriever, issue)
-
-    @staticmethod
-    def _active_history(
-        historical_context: CombinedHistoricalContext | None,
-    ) -> HistoricalContext | None:
-        return active_history(historical_context)
-
-    @staticmethod
-    def _active_source(historical_context: CombinedHistoricalContext | None) -> str | None:
-        return active_source(historical_context)
-
-    @staticmethod
-    def _actionable_or_none(
-        historical_context: HistoricalContext | None,
-    ) -> HistoricalContext | None:
-        return actionable_or_none(historical_context)
+        return CombinedHistoricalContext(
+            local_sonar=self._local_history_retriever.find_context(issue),
+        )
 
     def _build_guidance(
         self,
         issue: SonarIssue,
-        comment_intent: CommentIntent,
-        context_signals: ContextSignals,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> DeveloperGuidance:
-        return self._guidance_builder.build_guidance(
-            issue,
-            comment_intent,
-            context_signals,
-            historical_context,
-            history_source,
+        summary: HistoricalEvidenceSummary,
+    ) -> DeveloperGuidance | None:
+        case = summary.best_case()
+        if case is None or case.confidence < MIN_ENRICHMENT_CONFIDENCE:
+            return None
+
+        evidence = EvidenceBackedGuidance(
+            decision=self._decision(case),
+            confidence=case.confidence,
+            reason=self._reason(issue, summary, case),
+            case_type=case.case_type,
+            case_key=case.issue_key,
+            precedent_url=self._precedent_url(case),
+            precedent_pr_number=(
+                case.fix_reference.pr_number if case.fix_reference is not None else None
+            ),
+            precedent_evidence=(
+                case.fix_reference.evidence if case.fix_reference is not None else ()
+            ),
+        )
+        return DeveloperGuidance(level=GuidanceLevel.CONTEXTUAL, evidence=evidence)
+
+    @staticmethod
+    def _decision(case: HistoricalIssueCase) -> str:
+        if case.case_type is HistoricalCaseType.DEFERRED:
+            return "safe to defer"
+        if case.case_type is HistoricalCaseType.PERSISTENT:
+            return "safe to defer"
+        if case.case_type is HistoricalCaseType.REVIEW_CAREFULLY:
+            return "review carefully"
+        return "likely worth fixing now"
+
+    @staticmethod
+    def _precedent_url(case: HistoricalIssueCase) -> str | None:
+        if case.fix_reference is None:
+            return None
+        return case.fix_reference.file_url or case.fix_reference.pr_url
+
+    @classmethod
+    def _reason(
+        cls,
+        issue: SonarIssue,
+        summary: HistoricalEvidenceSummary,
+        case: HistoricalIssueCase,
+    ) -> str:
+        total = max(summary.close_cases_count, summary.related_cases_count)
+        file_suffix = cls._file_suffix(issue, summary)
+        if case.case_type is HistoricalCaseType.DEFERRED:
+            deferred_count = summary.accepted_cases_count + summary.persistent_cases_count
+            return (
+                f"{deferred_count} of {total} close historical matches for `{issue.rule}` "
+                f"were accepted or left open{file_suffix}."
+            )
+        if case.case_type is HistoricalCaseType.PERSISTENT:
+            return (
+                f"{summary.persistent_cases_count} of {total} close historical matches for "
+                f"`{issue.rule}` remained open{file_suffix}."
+            )
+        if case.case_type is HistoricalCaseType.REVIEW_CAREFULLY:
+            return (
+                f"the closest historical match for `{issue.rule}` is behavior-sensitive "
+                f"and scored {round(case.confidence * 100)}% confidence{file_suffix}."
+            )
+        return (
+            f"{summary.fixed_cases_count} of {total} close historical matches for "
+            f"`{issue.rule}` were fixed{file_suffix}."
         )
 
-    def _context_signals(
-        self,
-        issue: SonarIssue,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-        language_profile: IssueLanguageProfile,
-    ) -> ContextSignals:
-        return context_signals(issue, historical_context, history_source, language_profile)
-
-    def _comment_intent(
-        self,
-        issue: SonarIssue,
-        context_signals: ContextSignals,
-    ) -> CommentIntent:
-        return comment_intent(issue, context_signals)
-
     @staticmethod
-    def _should_fix_local_code_smell(
-        issue: SonarIssue,
-        context_signals: ContextSignals,
-    ) -> bool:
-        return should_fix_local_code_smell(issue, context_signals)
-
-    @staticmethod
-    def _has_fix_signal(context_signals: ContextSignals) -> bool:
-        return has_fix_signal(context_signals)
-
-    @staticmethod
-    def _uses_non_local_history(context_signals: ContextSignals) -> bool:
-        return uses_non_local_history(context_signals)
-
-    @classmethod
-    def _history_driven_intent(
-        cls,
-        context_signals: ContextSignals,
-    ) -> CommentIntent | None:
-        _ = cls
-        return history_driven_intent_for(context_signals)
-
-    @classmethod
-    def _should_defer_from_history(cls, context_signals: ContextSignals) -> bool:
-        _ = cls
-        return should_defer_from_history(context_signals)
-
-    @classmethod
-    def _should_fix_from_history(cls, context_signals: ContextSignals) -> bool:
-        _ = cls
-        return should_fix_from_history(context_signals)
-
-    @classmethod
-    def _should_mark_history_recurrence(
-        cls,
-        context_signals: ContextSignals,
-    ) -> bool:
-        _ = cls
-        return should_mark_history_recurrence(context_signals)
-
-    @classmethod
-    def _uses_history_for_guidance(cls, context_signals: ContextSignals) -> bool:
-        _ = cls
-        return uses_history_for_guidance(context_signals)
-
-    def _issue_language_profile(
-        self,
-        issue: SonarIssue,
-        historical_context: HistoricalContext | None,
-    ) -> IssueLanguageProfile:
-        return issue_language_profile(issue, historical_context)
-
-    @staticmethod
-    def _content_terms(*values: str) -> tuple[str, ...]:
-        return content_terms(*values)
-
-    @staticmethod
-    def _self_explanatory_score(
-        issue: SonarIssue,
-        content_terms: tuple[str, ...],
-    ) -> float:
-        return self_explanatory_score(issue, content_terms)
-
-    @staticmethod
-    def _small_effort(effort: str | None) -> bool:
-        return small_effort(effort)
-
-    @staticmethod
-    def _fix_tendency_high(historical_context: HistoricalContext | None) -> bool:
-        return fix_tendency_high(historical_context)
-
-    @staticmethod
-    def _quick_fix_tendency_high(historical_context: HistoricalContext | None) -> bool:
-        return quick_fix_tendency_high(historical_context)
-
-    @staticmethod
-    def _persistence_high(historical_context: HistoricalContext | None) -> bool:
-        return persistence_high(historical_context)
-
-    @staticmethod
-    def _is_self_explanatory(
-        issue: SonarIssue,
-        language_profile: IssueLanguageProfile,
-    ) -> bool:
-        return is_self_explanatory(issue, language_profile)
-
-    @staticmethod
-    def _is_behavior_risk(
-        issue: SonarIssue,
-        historical_context: HistoricalContext | None,
-        language_profile: IssueLanguageProfile,
-    ) -> bool:
-        return is_behavior_risk(issue, historical_context, language_profile)
+    def _file_suffix(issue: SonarIssue, summary: HistoricalEvidenceSummary) -> str:
+        if any(case.file_path == issue.location.path for case in summary.cases):
+            return ", including one in this file"
+        return ""
 
     @staticmethod
     def _build_history_retriever(
-        retriever_factory: Callable[[HistoryStore, str], object],
+        retriever_factory: Callable[[HistoryStore, str], CaseHistoryRetriever],
         *,
         enable_local_history: bool,
         history_store: HistoryStore | None,
         repository_key: str | None,
-    ) -> object | None:
-        return build_history_retriever(
-            retriever_factory,
-            enable_local_history=enable_local_history,
-            history_store=history_store,
-            repository_key=repository_key,
-        )
-
-    @staticmethod
-    def _detailed_guidance(
-        issue: SonarIssue,
-        comment_intent: CommentIntent,
-        context_signals: ContextSignals,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> DeveloperGuidance:
-        return GuidanceBuilder(DeterministicGuidanceMessageService())._detailed_guidance(
-            issue,
-            comment_intent,
-            context_signals,
-            historical_context,
-            history_source,
-        )
-
-    @staticmethod
-    def _contextual_guidance(
-        issue: SonarIssue,
-        comment_intent: CommentIntent,
-        context_signals: ContextSignals,
-        historical_context: HistoricalContext | None,
-        history_source: str | None,
-    ) -> DeveloperGuidance:
-        return GuidanceBuilder(DeterministicGuidanceMessageService())._contextual_guidance(
-            issue,
-            comment_intent,
-            context_signals,
-            historical_context,
-            history_source,
-        )
-
-    @staticmethod
-    def _has_grounded_history(historical_context: HistoricalContext | None) -> bool:
-        return has_grounded_history(historical_context)
-
-    @staticmethod
-    def _has_actionable_history(historical_context: HistoricalContext | None) -> bool:
-        return has_actionable_history(historical_context)
+    ) -> CaseHistoryRetriever | None:
+        if not enable_local_history or history_store is None or repository_key is None:
+            return None
+        return retriever_factory(history_store, repository_key)

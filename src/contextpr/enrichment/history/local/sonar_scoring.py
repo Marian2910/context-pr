@@ -123,6 +123,8 @@ def disposition_bucket(record: SonarIssueRecord) -> str | None:
         return "resolved"
     if resolution in {"wontfix", "won't fix", "false positive", "accepted"}:
         return "accepted"
+    if status in {"accepted", "false-positive", "false_positive"}:
+        return "accepted"
     if status in {"closed"}:
         return "resolved"
     if status in {"resolved"}:
