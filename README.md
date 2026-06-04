@@ -218,11 +218,13 @@ git.
 ## Dataset mode
 
 Older ContextPR prototypes used a curated cross-repository dataset as a cold-start fallback for
-inline comments. The current case-based implementation no longer uses that dataset to generate
-GitHub review comments.
+inline comments. The current case-based implementation does not use that dataset in the
+enrichment path.
 
-The dataset path is still accepted for compatibility and experiments, but weak or missing local
-Sonar history now means ContextPR stays silent and leaves the baseline Sonar finding unchanged.
+The dataset path is still accepted in configuration for backward compatibility, and the dataset
+normalization utility remains available for offline experiments. `contextpr analyze` does not
+load the dataset. Weak or missing local Sonar history means ContextPR stays silent and leaves the
+baseline Sonar finding unchanged.
 
 ### Dataset artifact
 

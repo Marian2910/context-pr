@@ -124,8 +124,9 @@ fix has at least 90% confidence.
 The curated dataset is optional.
 
 - It is not required for repository-local enrichment.
-- It is retained for compatibility and offline experiments.
-- It does not currently generate inline GitHub review comments.
+- Its configuration path is retained for backward compatibility.
+- The dataset normalization utility remains available for offline experiments.
+- It is not loaded by the current `contextpr analyze` enrichment path.
 
 By default, the configuration points to:
 
