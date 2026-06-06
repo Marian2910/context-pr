@@ -190,6 +190,78 @@ def test_local_sonar_accepted_cases_build_defer_guidance(tmp_path: Path) -> None
     assert "accepted or left open" in evidence.reason
 
 
+def test_security_vulnerability_never_builds_safe_to_defer_guidance(tmp_path: Path) -> None:
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 4):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"accepted-security-{index}",
+                rule="pythonsecurity:S2083",
+                issue_type="VULNERABILITY",
+                severity="HIGH",
+                component="src/app.py",
+                message="Change this code to not construct the path from user-controlled data.",
+                status="ACCEPTED",
+                resolution=None,
+                updated_at=f"2026-05-15T1{index}:00:00+00:00",
+                line=20 + index,
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(
+        SonarIssue(
+            key="issue-s2083",
+            rule="pythonsecurity:S2083",
+            severity="HIGH",
+            message="Change this code to not construct the path from user-controlled data.",
+            location=IssueLocation(path="src/app.py", line=12),
+            issue_type="VULNERABILITY",
+        )
+    )
+
+    assert enrichment is not None
+    evidence = enrichment.guidance.evidence
+    assert evidence.decision == "requires security review"
+    assert "needs manual review" in evidence.reason
+
+
+def test_security_rule_prefix_blocks_safe_to_defer_even_without_vulnerability_type(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                "message,rule,type,tags,clean_code_attribute,clean_code_attribute_category,"
+                "impacts,component,ccs_classification,creation_date",
+                '"Change this code to not construct the path from user-controlled data.",'
+                'pythonsecurity:S2083,CODE_SMELL,"[]",CLEAR,INTENTIONAL,'
+                '"[{\'severity\': \'high\'}]",repo:src/app.py,defer,2024-01-01',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(
+        SonarIssue(
+            key="issue-security-rule",
+            rule="pythonsecurity:S2083",
+            severity="HIGH",
+            message="Change this code to not construct the path from user-controlled data.",
+            location=IssueLocation(path="src/app.py", line=12),
+            issue_type="CODE_SMELL",
+        )
+    )
+
+    assert enrichment is not None
+    assert enrichment.guidance.evidence.decision == "requires security review"
+
+
 def test_behavior_sensitive_case_builds_review_carefully_guidance(tmp_path: Path) -> None:
     store = HistoryStore(tmp_path / "history.db")
     store.upsert_sonar_issue(

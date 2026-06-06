@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -78,6 +79,19 @@ def main(
         ),
     ] = None,
 ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RepoPaths:
+    root: Path
+    state_dir: Path
+    config_path: Path
+    gitignore_path: Path
+    env_path: Path
+    hooks_dir: Path
+    pre_commit_hook_path: Path
+    secrets_dir: Path
+    github_app_private_key_path: Path
 
 
 def _analyze_pull_request(
@@ -228,24 +242,24 @@ def init(
     ] = True,
 ) -> None:
     _show_init_banner()
-    root = _repository_root()
+    paths = _repository_paths()
     state_dir = _animated_step(
         "Preparing repository state",
-        lambda: _ensure_repo_state(root),
+        lambda: _ensure_repo_state(paths),
     )
     _animated_step(
         "Updating gitignore",
-        lambda: _ensure_repo_gitignore_entries(root, GITIGNORE_ENTRIES),
+        lambda: _ensure_repo_gitignore_entries(paths, GITIGNORE_ENTRIES),
     )
     if install_hook:
         _animated_step(
             "Installing commit guard",
-            lambda: _install_pre_commit_hook(root),
+            lambda: _install_pre_commit_hook(paths),
         )
     if configure_secrets:
-        _configure_local_credentials(root)
+        _configure_local_credentials(paths)
 
-    tracked = _tracked_local_paths(root)
+    tracked = _tracked_local_paths(paths.root)
     typer.echo(f"ContextPR initialized in {state_dir}.")
     typer.echo(f"Local history database will be stored at {state_dir / 'history.db'}.")
     if tracked:
@@ -267,8 +281,7 @@ def sync() -> None:
 
 @app.command()
 def guard() -> None:
-    root = _repository_root()
-    tracked = _tracked_local_paths(root)
+    tracked = _tracked_local_paths(_repository_paths().root)
     if tracked:
         raise typer.BadParameter(
             "ContextPR local state or secrets are tracked by git: "
@@ -467,6 +480,24 @@ def _repository_root() -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
+def _repository_paths() -> RepoPaths:
+    root = _repository_root()
+    state_dir = root / REPO_STATE_DIR_NAME
+    secrets_dir = root / "secrets"
+    hooks_dir = root / ".git" / "hooks"
+    return RepoPaths(
+        root=root,
+        state_dir=state_dir,
+        config_path=state_dir / REPO_CONFIG_FILE_NAME,
+        gitignore_path=root / GITIGNORE_FILENAME,
+        env_path=root / ENV_FILENAME,
+        hooks_dir=hooks_dir,
+        pre_commit_hook_path=hooks_dir / PRE_COMMIT_HOOK_FILENAME,
+        secrets_dir=secrets_dir,
+        github_app_private_key_path=secrets_dir / GITHUB_APP_PRIVATE_KEY_FILENAME,
+    )
+
+
 def _show_init_banner() -> None:
     if not sys.stdout.isatty():
         return
@@ -514,12 +545,10 @@ def _animated_step[T](label: str, action: Callable[[], T]) -> T:
     return result
 
 
-def _ensure_repo_state(root: Path) -> Path:
-    state_dir = root / REPO_STATE_DIR_NAME
-    state_dir.mkdir(parents=True, exist_ok=True)
-    config_path = state_dir / REPO_CONFIG_FILE_NAME
-    if not config_path.exists():
-        config_path.write_text(
+def _ensure_repo_state(paths: RepoPaths) -> Path:
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    if not paths.config_path.exists():
+        paths.config_path.write_text(
             "\n".join(
                 (
                     'github_repository = ""',
@@ -532,77 +561,58 @@ def _ensure_repo_state(root: Path) -> Path:
             ),
             encoding="utf-8",
         )
-    return state_dir
+    return paths.state_dir
 
 
-def _ensure_repo_gitignore_entries(root: Path, entries: tuple[str, ...]) -> None:
-    existing = _read_gitignore(root)
+def _ensure_repo_gitignore_entries(paths: RepoPaths, entries: tuple[str, ...]) -> None:
+    existing = _read_gitignore(paths)
     lines = existing.splitlines()
     missing = [entry for entry in entries if entry not in lines]
     if not missing:
         return
     prefix = "\n" if existing and not existing.endswith("\n") else ""
-    _write_gitignore(root, existing + prefix + "\n".join(missing) + "\n")
+    _write_gitignore(paths, existing + prefix + "\n".join(missing) + "\n")
 
 
-def _safe_repo_file(root: Path, filename: str) -> Path:
-    resolved_root = root.resolve(strict=True)
-    candidate = (resolved_root / filename).resolve(strict=False)
-    if candidate.parent != resolved_root or candidate.name != filename:
-        raise typer.BadParameter(f"Refusing to write outside repository root: {filename}")
-    return candidate
-
-
-def _gitignore_path(root: Path) -> Path:
-    return _safe_repo_file(root, GITIGNORE_FILENAME)
-
-
-def _env_path(root: Path) -> Path:
-    return _safe_repo_file(root, ENV_FILENAME)
-
-
-def _read_gitignore(root: Path) -> str:
-    path = _gitignore_path(root)
-    if not path.exists():
+def _read_gitignore(paths: RepoPaths) -> str:
+    if not paths.gitignore_path.exists():
         return ""
-    return path.read_text(encoding="utf-8")
+    return paths.gitignore_path.read_text(encoding="utf-8")
 
 
-def _write_gitignore(root: Path, content: str) -> None:
-    path = _gitignore_path(root)
-    path.write_text(content, encoding="utf-8")
+def _write_gitignore(paths: RepoPaths, content: str) -> None:
+    paths.gitignore_path.write_text(content, encoding="utf-8")
 
 
-def _read_env_text(root: Path) -> str:
-    path = _env_path(root)
-    if not path.exists():
+def _read_env_text(paths: RepoPaths) -> str:
+    if not paths.env_path.exists():
         return ""
-    return path.read_text(encoding="utf-8")
+    return paths.env_path.read_text(encoding="utf-8")
 
 
-def _write_env_text(root: Path, content: str) -> None:
-    path = _env_path(root)
-    path.write_text(content, encoding="utf-8")
+def _write_env_text(paths: RepoPaths, content: str) -> None:
+    paths.env_path.write_text(content, encoding="utf-8")
 
 
-def _install_pre_commit_hook(root: Path) -> None:
-    hooks_dir = root / ".git" / "hooks"
-    if not hooks_dir.is_dir():
+def _install_pre_commit_hook(paths: RepoPaths) -> None:
+    if not paths.hooks_dir.is_dir():
         typer.echo("Skipping pre-commit hook installation because .git/hooks was not found.")
         return
-    hook_path = hooks_dir / PRE_COMMIT_HOOK_FILENAME
-    if hook_path.exists():
-        existing = hook_path.read_text(encoding="utf-8")
+    if paths.pre_commit_hook_path.exists():
+        existing = paths.pre_commit_hook_path.read_text(encoding="utf-8")
         if "ContextPR refuses to commit local state or secrets" in existing:
             return
-        hook_path.write_text(existing.rstrip() + "\n\n" + PRE_COMMIT_HOOK, encoding="utf-8")
+        paths.pre_commit_hook_path.write_text(
+            existing.rstrip() + "\n\n" + PRE_COMMIT_HOOK,
+            encoding="utf-8",
+        )
     else:
-        hook_path.write_text(PRE_COMMIT_HOOK, encoding="utf-8")
-    hook_path.chmod(hook_path.stat().st_mode | 0o111)
+        paths.pre_commit_hook_path.write_text(PRE_COMMIT_HOOK, encoding="utf-8")
+    paths.pre_commit_hook_path.chmod(paths.pre_commit_hook_path.stat().st_mode | 0o111)
 
 
-def _configure_local_credentials(root: Path) -> None:
-    values = _read_env_values(root)
+def _configure_local_credentials(paths: RepoPaths) -> None:
+    values = _read_env_values(paths)
     values.update(
         {
             "CONTEXTPR_GITHUB_APP_ID": typer.prompt(
@@ -619,7 +629,7 @@ def _configure_local_credentials(root: Path) -> None:
             ),
         }
     )
-    _write_github_app_private_key(root)
+    _write_github_app_private_key(paths)
     values.update(
         {
             "CONTEXTPR_SONAR_TOKEN": typer.prompt(
@@ -648,19 +658,20 @@ def _configure_local_credentials(root: Path) -> None:
                 or "",
             ),
             "CONTEXTPR_ENABLE_LOCAL_HISTORY": "true",
-            "CONTEXTPR_LOCAL_HISTORY_DB_PATH": str(root / REPO_STATE_DIR_NAME / "history.db"),
+            "CONTEXTPR_LOCAL_HISTORY_DB_PATH": str(paths.state_dir / "history.db"),
         }
     )
-    _write_env_values(root, values)
-    typer.echo(f"Wrote local secrets to {root / ENV_FILENAME}.")
+    _write_env_values(paths, values)
+    typer.echo(f"Wrote local secrets to {paths.env_path}.")
     typer.echo(
-        f"Wrote GitHub App private key to {root / 'secrets' / GITHUB_APP_PRIVATE_KEY_FILENAME}."
+        f"Wrote GitHub App private key to {paths.github_app_private_key_path}."
     )
 
 
-def _write_github_app_private_key(root: Path) -> None:
-    destination = root / "secrets" / GITHUB_APP_PRIVATE_KEY_FILENAME
-    existing_default = str(destination) if destination.is_file() else ""
+def _write_github_app_private_key(paths: RepoPaths) -> None:
+    existing_default = (
+        str(paths.github_app_private_key_path) if paths.github_app_private_key_path.is_file() else ""
+    )
     source = typer.prompt(
         "GitHub App private key PEM file path",
         default=existing_default,
@@ -673,12 +684,12 @@ def _write_github_app_private_key(root: Path) -> None:
     if "BEGIN" not in private_key or "PRIVATE KEY" not in private_key:
         raise typer.BadParameter("GitHub App private key file does not look like a PEM key.")
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(private_key + "\n", encoding="utf-8")
+    paths.github_app_private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.github_app_private_key_path.write_text(private_key + "\n", encoding="utf-8")
 
 
-def _read_env_values(root: Path) -> dict[str, str]:
-    raw_content = _read_env_text(root)
+def _read_env_values(paths: RepoPaths) -> dict[str, str]:
+    raw_content = _read_env_text(paths)
     if not raw_content:
         return {}
     values: dict[str, str] = {}
@@ -691,10 +702,10 @@ def _read_env_values(root: Path) -> dict[str, str]:
     return values
 
 
-def _write_env_values(root: Path, values: dict[str, str]) -> None:
+def _write_env_values(paths: RepoPaths, values: dict[str, str]) -> None:
     remaining = {key for key, value in values.items() if value}
     output: list[str] = []
-    existing = _read_env_text(root)
+    existing = _read_env_text(paths)
     for raw_line in existing.splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#") or "=" not in raw_line:
@@ -711,7 +722,7 @@ def _write_env_values(root: Path, values: dict[str, str]) -> None:
     if output and output[-1].strip():
         output.append("")
     output.extend(f"{key}={values[key]}" for key in values if key in remaining)
-    _write_env_text(root, "\n".join(output) + "\n")
+    _write_env_text(paths, "\n".join(output) + "\n")
 
 
 def _tracked_local_paths(root: Path) -> list[str]:

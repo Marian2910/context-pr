@@ -102,7 +102,7 @@ class IssueEnricher:
             return None
 
         evidence = EvidenceBackedGuidance(
-            decision=self._decision(case),
+            decision=self._decision(issue, case),
             confidence=case.confidence,
             reason=self._reason(issue, summary, case),
             case_type=case.case_type,
@@ -117,8 +117,10 @@ class IssueEnricher:
         )
         return DeveloperGuidance(level=GuidanceLevel.CONTEXTUAL, evidence=evidence)
 
-    @staticmethod
-    def _decision(case: HistoricalIssueCase) -> str:
+    @classmethod
+    def _decision(cls, issue: SonarIssue, case: HistoricalIssueCase) -> str:
+        if cls._requires_security_review(issue):
+            return "requires security review"
         if case.case_type is HistoricalCaseType.DEFERRED:
             return "safe to defer"
         if case.case_type is HistoricalCaseType.PERSISTENT:
@@ -126,6 +128,13 @@ class IssueEnricher:
         if case.case_type is HistoricalCaseType.REVIEW_CAREFULLY:
             return "review carefully"
         return "likely worth fixing now"
+
+    @staticmethod
+    def _requires_security_review(issue: SonarIssue) -> bool:
+        issue_type = issue.issue_type.strip().upper()
+        if issue_type in {"VULNERABILITY", "SECURITY_HOTSPOT", "SECURITY", "HOTSPOT"}:
+            return True
+        return issue.rule.lower().startswith(("pythonsecurity:", "javasecurity:", "javascriptsecurity:"))
 
     @staticmethod
     def _precedent_url(case: HistoricalIssueCase) -> str | None:
@@ -154,11 +163,23 @@ class IssueEnricher:
         )
         if case.case_type is HistoricalCaseType.DEFERRED:
             deferred_count = summary.accepted_cases_count + summary.persistent_cases_count
+            if cls._requires_security_review(issue):
+                return (
+                    f"{deferred_count} of {total} {history_scope} for `{issue.rule}` "
+                    "were accepted or left open, but this security-sensitive finding "
+                    f"still needs manual review{file_suffix}."
+                )
             return (
                 f"{deferred_count} of {total} {history_scope} for `{issue.rule}` "
                 f"were accepted or left open{file_suffix}."
             )
         if case.case_type is HistoricalCaseType.PERSISTENT:
+            if cls._requires_security_review(issue):
+                return (
+                    f"{summary.persistent_cases_count} of {total} {history_scope} for "
+                    f"`{issue.rule}` remained open, but this security-sensitive finding "
+                    f"still needs manual review{file_suffix}."
+                )
             return (
                 f"{summary.persistent_cases_count} of {total} {history_scope} for "
                 f"`{issue.rule}` remained open{file_suffix}."

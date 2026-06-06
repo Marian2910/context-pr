@@ -6,7 +6,7 @@ import pytest
 from typer import BadParameter
 from typer.testing import CliRunner
 
-from contextpr.cli import _read_env_values, _safe_repo_file, _write_env_values, app
+from contextpr.cli import _read_env_values, _repository_paths, _write_env_values, app
 from contextpr.config import Settings
 from contextpr.integrations.github import (
     LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
@@ -459,23 +459,50 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     ) == private_key.read_text(encoding="utf-8")
 
 
-def test_safe_repo_file_rejects_paths_outside_repository(tmp_path: Path) -> None:
+def test_repository_paths_are_anchored_to_git_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    monkeypatch.setattr("contextpr.cli._repository_root", lambda: repo)
 
-    with pytest.raises(BadParameter, match="outside repository root"):
-        _safe_repo_file(repo, "../.gitignore")
+    paths = _repository_paths()
+
+    assert paths.gitignore_path == repo / ".gitignore"
+    assert paths.env_path == repo / ".env"
+    assert paths.pre_commit_hook_path == repo / ".git" / "hooks" / "pre-commit"
 
 
 def test_write_env_values_updates_only_repo_root_env_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".env").write_text("# Existing\nFOO=bar\n", encoding="utf-8")
+    paths = _repository_paths_for(repo)
 
-    _write_env_values(repo, {"FOO": "baz", "BAR": "qux"})
+    _write_env_values(paths, {"FOO": "baz", "BAR": "qux"})
 
-    assert _read_env_values(repo) == {"FOO": "baz", "BAR": "qux"}
+    assert _read_env_values(paths) == {"FOO": "baz", "BAR": "qux"}
     assert not (tmp_path / ".env").exists()
+
+
+def _repository_paths_for(repo: Path):
+    from contextpr.cli import RepoPaths
+
+    state_dir = repo / ".context-pr"
+    secrets_dir = repo / "secrets"
+    hooks_dir = repo / ".git" / "hooks"
+    return RepoPaths(
+        root=repo,
+        state_dir=state_dir,
+        config_path=state_dir / "config.toml",
+        gitignore_path=repo / ".gitignore",
+        env_path=repo / ".env",
+        hooks_dir=hooks_dir,
+        pre_commit_hook_path=hooks_dir / "pre-commit",
+        secrets_dir=secrets_dir,
+        github_app_private_key_path=secrets_dir / "GITHUB_APP_PRIVATE_KEY.pem",
+    )
 
 
 def test_guard_passes_when_local_paths_are_not_tracked(
