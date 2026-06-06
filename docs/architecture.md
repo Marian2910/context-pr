@@ -76,8 +76,9 @@ The supported guidance decisions are:
 - `review carefully`
 - `similar fix available`
 
-Weak history, sparse history, global dataset matches, Git-only matches, PR-only matches, and
-review-comment-only matches do not create inline enrichment comments.
+Weak history, sparse history, Git-only matches, PR-only matches, and review-comment-only matches
+do not create inline enrichment comments. Curated dataset matches can create comments, but only
+as a fallback when local Sonar history does not produce a qualifying case.
 
 Review comments are rendered as short paragraph-separated sections rather than one dense block.
 In practice this usually means:
@@ -89,8 +90,8 @@ In practice this usually means:
 
 ## Historical context
 
-ContextPR stores several kinds of repository history, but the current inline enrichment decision
-source is local Sonar issue history.
+ContextPR stores several kinds of repository history, and the inline enrichment path prefers
+local Sonar issue history before consulting the curated dataset fallback.
 
 The local repository history store can include:
 
@@ -126,7 +127,10 @@ The curated dataset is optional.
 - It is not required for repository-local enrichment.
 - Its configuration path is retained for backward compatibility.
 - The dataset normalization utility remains available for offline experiments.
-- It is not loaded by the current `contextpr analyze` enrichment path.
+- `contextpr analyze` loads it only as a fallback when local Sonar history does not produce a
+  confident historical case.
+- Dataset-backed comments include an explicit disclaimer that their confidence comes from
+  cross-project issue matches rather than repository-local precedent.
 
 By default, the configuration points to:
 

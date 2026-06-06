@@ -69,13 +69,16 @@ class EvidenceBackedGuidance:
 @dataclass(frozen=True, slots=True)
 class CombinedHistoricalContext:
     local_sonar: HistoricalEvidenceSummary | None = None
+    dataset: HistoricalEvidenceSummary | None = None
 
     def preferred_evidence(self) -> HistoricalEvidenceSummary | None:
-        return self.local_sonar
+        return self.local_sonar or self.dataset
 
     def preferred_source_name(self) -> str | None:
         if self.local_sonar is not None:
             return "local_sonar"
+        if self.dataset is not None:
+            return "dataset"
         return None
 
 

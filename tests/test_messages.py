@@ -1,6 +1,8 @@
 from contextpr.enrichment import (
+    CombinedHistoricalContext,
     EvidenceBackedGuidance,
     HistoricalCaseType,
+    HistoricalEvidenceSummary,
 )
 from contextpr.enrichment.nlp import DeveloperGuidance, GuidanceLevel, IssueEnrichment
 from contextpr.models import IssueLocation, SonarIssue
@@ -132,3 +134,82 @@ def test_review_comment_omits_precedent_when_no_link_exists() -> None:
 
     assert "ContextPR: safe to defer · 78% confidence" in note
     assert "Closest precedent:" not in note
+
+
+def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
+    enriched = IssueEnrichment(
+        guidance=DeveloperGuidance(
+            level=GuidanceLevel.CONTEXTUAL,
+            evidence=EvidenceBackedGuidance(
+                decision="likely worth fixing now",
+                confidence=0.82,
+                reason="3 of 5 cross-project dataset matches for `python:S1172` were fixed.",
+                case_type=HistoricalCaseType.PREVIOUS_FIX,
+                case_key="dataset:4",
+            ),
+        ),
+        historical_context=CombinedHistoricalContext(
+            dataset=HistoricalEvidenceSummary(
+                source_name="dataset",
+                cases=(),
+                related_cases_count=5,
+                close_cases_count=3,
+                fixed_cases_count=3,
+                accepted_cases_count=0,
+                persistent_cases_count=0,
+            )
+        ),
+    )
+    note = ReviewCommentComposer().reviewer_note(
+        SonarIssue(
+            key="issue-s1172",
+            rule="python:S1172",
+            severity="LOW",
+            message="Remove unused function parameter",
+            location=IssueLocation(path="src/app.py", line=12),
+            issue_type="CODE_SMELL",
+        ),
+        enriched,
+    )
+
+    assert "Fallback: this confidence is based on similar cross-project issues" in note
+
+
+def test_review_comment_helpers_cover_remaining_branches() -> None:
+    composer = ReviewCommentComposer()
+    issue = SonarIssue(
+        key="issue-s1172",
+        rule="python:S1172",
+        severity="LOW",
+        message="Remove unused function parameter",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
+
+    assert composer.fallback_disclaimer(
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                evidence=EvidenceBackedGuidance(
+                    decision="likely worth fixing now",
+                    confidence=0.82,
+                    reason="reason",
+                    case_type=HistoricalCaseType.PREVIOUS_FIX,
+                    case_key="case-1",
+                ),
+            ),
+            historical_context=CombinedHistoricalContext(),
+        )
+    ) is None
+    assert composer.issue_anchor(issue, "minimal") is None
+    assert composer.issue_anchor(
+        SonarIssue(
+            key="issue-bug",
+            rule="python:S1515",
+            severity="HIGH",
+            message="Bug issue",
+            location=IssueLocation(path="src/app.py", line=8),
+            issue_type="BUG",
+        ),
+        GuidanceLevel.CONTEXTUAL,
+    ) is None

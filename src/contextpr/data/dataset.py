@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from collections.abc import Iterable
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pandas as pd
@@ -43,6 +43,17 @@ def load_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
     normalized = normalized[normalized[TARGET_COLUMN] != ""].reset_index(drop=True)
     return normalized
+
+
+def load_dataset_file(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        frame = pd.read_csv(path)
+    elif suffix in {".xlsx", ".xls"}:
+        frame = pd.read_excel(path)
+    else:
+        raise ValueError(f"Unsupported dataset format: {path.suffix or '<none>'}")
+    return load_dataset(frame)
 
 
 def _validate_columns(columns: Iterable[object]) -> None:

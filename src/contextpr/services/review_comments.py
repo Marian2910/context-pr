@@ -118,6 +118,9 @@ class ReviewCommentComposer:
                 f"Reason: {evidence.reason}"
             ),
         ]
+        disclaimer = self.fallback_disclaimer(enrichment)
+        if disclaimer is not None:
+            sections.append(disclaimer)
         if evidence.precedent_url is not None:
             sections.append(f"Closest precedent:\n{evidence.precedent_url}")
         return "\n\n".join(sections)
@@ -137,6 +140,18 @@ class ReviewCommentComposer:
                 f"Why this match is shown:\n\n{evidence_lines}",
                 f"Previous fix:\n{evidence.precedent_url}",
             )
+        )
+
+    @staticmethod
+    def fallback_disclaimer(enrichment: IssueEnrichment) -> str | None:
+        if enrichment.historical_context is None:
+            return None
+        source_name = enrichment.historical_context.preferred_source_name()
+        if source_name != "dataset":
+            return None
+        return (
+            "Fallback: this confidence is based on similar cross-project issues from the "
+            "curated dataset, so treat it as a cold-start signal."
         )
 
     @staticmethod
