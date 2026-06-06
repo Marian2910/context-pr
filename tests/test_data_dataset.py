@@ -1,7 +1,14 @@
 import pandas as pd
 import pytest
 
-from contextpr.data.dataset import TARGET_COLUMN, load_dataset, load_dataset_file
+from contextpr.data.dataset import (
+    TARGET_COLUMN,
+    _coerce_to_sequence,
+    _extract_file_extension,
+    _parse_tags,
+    load_dataset,
+    load_dataset_file,
+)
 
 
 def test_load_dataset_normalizes_runtime_fields() -> None:
@@ -116,3 +123,43 @@ def test_load_dataset_file_reads_csv(tmp_path) -> None:
 
     assert len(normalized) == 1
     assert normalized.iloc[0]["severity"] == "LOW"
+
+
+def test_load_dataset_file_reads_excel(tmp_path) -> None:
+    dataset_path = tmp_path / "issues.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "message": "Remove unused parameter",
+                "rule": "python:S1172",
+                "type": "CODE_SMELL",
+                "tags": "['unused']",
+                "clean_code_attribute": "CLEAR",
+                "clean_code_attribute_category": "INTENTIONAL",
+                "impacts": "[{'severity': 'low'}]",
+                "component": "repo:src/app.py",
+                TARGET_COLUMN: "fix",
+            }
+        ]
+    ).to_excel(dataset_path, index=False)
+
+    normalized = load_dataset_file(dataset_path)
+
+    assert len(normalized) == 1
+    assert normalized.iloc[0]["file_extension"] == ".py"
+
+
+def test_load_dataset_file_rejects_unknown_format(tmp_path) -> None:
+    dataset_path = tmp_path / "issues.txt"
+    dataset_path.write_text("not a dataset", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported dataset format"):
+        load_dataset_file(dataset_path)
+
+
+def test_parse_tags_and_helpers_cover_non_default_branches() -> None:
+    assert _parse_tags({"not": "supported"}) == []
+    assert _parse_tags("{'solo': 'value'}") == ["{'solo': 'value'}"]
+    assert _coerce_to_sequence({"bad": "type"}) == []
+    assert _coerce_to_sequence(" {'severity': 'low'} ") == []
+    assert _extract_file_extension("repo:Makefile") == "no_extension"

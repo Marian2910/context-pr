@@ -173,3 +173,43 @@ def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
     )
 
     assert "Fallback: this confidence is based on similar cross-project issues" in note
+
+
+def test_review_comment_helpers_cover_remaining_branches() -> None:
+    composer = ReviewCommentComposer()
+    issue = SonarIssue(
+        key="issue-s1172",
+        rule="python:S1172",
+        severity="LOW",
+        message="Remove unused function parameter",
+        location=IssueLocation(path="src/app.py", line=12),
+        issue_type="CODE_SMELL",
+    )
+
+    assert composer.fallback_disclaimer(
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                evidence=EvidenceBackedGuidance(
+                    decision="likely worth fixing now",
+                    confidence=0.82,
+                    reason="reason",
+                    case_type=HistoricalCaseType.PREVIOUS_FIX,
+                    case_key="case-1",
+                ),
+            ),
+            historical_context=CombinedHistoricalContext(),
+        )
+    ) is None
+    assert composer.issue_anchor(issue, "minimal") is None
+    assert composer.issue_anchor(
+        SonarIssue(
+            key="issue-bug",
+            rule="python:S1515",
+            severity="HIGH",
+            message="Bug issue",
+            location=IssueLocation(path="src/app.py", line=8),
+            issue_type="BUG",
+        ),
+        GuidanceLevel.CONTEXTUAL,
+    ) is None

@@ -536,13 +536,13 @@ def _ensure_repo_state(root: Path) -> Path:
 
 
 def _ensure_repo_gitignore_entries(root: Path, entries: tuple[str, ...]) -> None:
-    existing = _read_repo_text(root, GITIGNORE_FILENAME)
+    existing = _read_gitignore(root)
     lines = existing.splitlines()
     missing = [entry for entry in entries if entry not in lines]
     if not missing:
         return
     prefix = "\n" if existing and not existing.endswith("\n") else ""
-    _write_repo_text(root, GITIGNORE_FILENAME, existing + prefix + "\n".join(missing) + "\n")
+    _write_gitignore(root, existing + prefix + "\n".join(missing) + "\n")
 
 
 def _safe_repo_file(root: Path, filename: str) -> Path:
@@ -553,15 +553,35 @@ def _safe_repo_file(root: Path, filename: str) -> Path:
     return candidate
 
 
-def _read_repo_text(root: Path, filename: str) -> str:
-    path = _safe_repo_file(root, filename)
+def _gitignore_path(root: Path) -> Path:
+    return _safe_repo_file(root, GITIGNORE_FILENAME)
+
+
+def _env_path(root: Path) -> Path:
+    return _safe_repo_file(root, ENV_FILENAME)
+
+
+def _read_gitignore(root: Path) -> str:
+    path = _gitignore_path(root)
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
 
 
-def _write_repo_text(root: Path, filename: str, content: str) -> None:
-    path = _safe_repo_file(root, filename)
+def _write_gitignore(root: Path, content: str) -> None:
+    path = _gitignore_path(root)
+    path.write_text(content, encoding="utf-8")
+
+
+def _read_env_text(root: Path) -> str:
+    path = _env_path(root)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _write_env_text(root: Path, content: str) -> None:
+    path = _env_path(root)
     path.write_text(content, encoding="utf-8")
 
 
@@ -658,7 +678,7 @@ def _write_github_app_private_key(root: Path) -> None:
 
 
 def _read_env_values(root: Path) -> dict[str, str]:
-    raw_content = _read_repo_text(root, ENV_FILENAME)
+    raw_content = _read_env_text(root)
     if not raw_content:
         return {}
     values: dict[str, str] = {}
@@ -674,7 +694,7 @@ def _read_env_values(root: Path) -> dict[str, str]:
 def _write_env_values(root: Path, values: dict[str, str]) -> None:
     remaining = {key for key, value in values.items() if value}
     output: list[str] = []
-    existing = _read_repo_text(root, ENV_FILENAME)
+    existing = _read_env_text(root)
     for raw_line in existing.splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#") or "=" not in raw_line:
@@ -691,7 +711,7 @@ def _write_env_values(root: Path, values: dict[str, str]) -> None:
     if output and output[-1].strip():
         output.append("")
     output.extend(f"{key}={values[key]}" for key in values if key in remaining)
-    _write_repo_text(root, ENV_FILENAME, "\n".join(output) + "\n")
+    _write_env_text(root, "\n".join(output) + "\n")
 
 
 def _tracked_local_paths(root: Path) -> list[str]:

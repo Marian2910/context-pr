@@ -3,9 +3,18 @@ from pathlib import Path
 import pytest
 
 from contextpr.enrichment import (
+    CombinedHistoricalContext,
     HistoricalCaseType,
+    HistoricalEvidenceSummary,
+    HistoricalIssueCase,
     IssueEnricher,
     LocalSonarHistoryRetriever,
+)
+from contextpr.enrichment.history.dataset import (
+    DatasetMatch,
+    _build_case,
+    _classification_case_type,
+    _match_score,
 )
 from contextpr.models import IssueLocation, SonarIssue
 from contextpr.persistence import (
@@ -297,6 +306,146 @@ def test_local_sonar_retriever_exposes_ranked_cases(tmp_path: Path) -> None:
     best_case = context.best_case()
     assert best_case is not None
     assert best_case.issue_key == "fixed"
+
+
+def test_dataset_retriever_supports_multiple_classifications_and_caps_top_matches(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    rows = [
+        (
+            "Remove unused function parameter",
+            "python:S1172",
+            "CODE_SMELL",
+            "['unused']",
+            "CLEAR",
+            "INTENTIONAL",
+            "[{'severity': 'low'}]",
+            f"repo:src/app_{index}.py",
+            classification,
+            "2024-01-01",
+        )
+        for index, classification in enumerate(
+            ["fix", "accepted", "persistent", "manual_review", "true_positive", "unknown"],
+            start=1,
+        )
+    ]
+    dataset_path.write_text(
+        "\n".join(
+            [
+                "message,rule,type,tags,clean_code_attribute,clean_code_attribute_category,"
+                "impacts,component,ccs_classification,creation_date",
+                *[
+                    ",".join(f'"{value}"' for value in row)
+                    for row in rows
+                ],
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(_issue())
+
+    assert enrichment is not None
+    dataset_summary = enrichment.historical_context.dataset
+    assert dataset_summary is not None
+    assert dataset_summary.close_cases_count == 5
+    assert dataset_summary.related_cases_count == 5
+    assert dataset_summary.fixed_cases_count == 2
+    assert dataset_summary.accepted_cases_count == 1
+    assert dataset_summary.persistent_cases_count == 1
+    assert any(case.case_type is HistoricalCaseType.REVIEW_CAREFULLY for case in dataset_summary.cases)
+
+
+def test_dataset_fallback_returns_none_for_weak_or_unmapped_matches(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                "message,rule,type,tags,clean_code_attribute,clean_code_attribute_category,"
+                "impacts,component,ccs_classification,creation_date",
+                '"Totally unrelated issue",python:S9999,BUG,"[]",ROBUST,ADAPTABLE,'
+                '"[{\'severity\': \'high\'}]",repo:docs/readme.md,unknown,2024-01-01',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert IssueEnricher(dataset_path=dataset_path).enrich(_issue()) is None
+
+
+def test_dataset_scoring_and_case_helpers_cover_remaining_branches() -> None:
+    review_case = _classification_case_type(" manual-review ")
+    assert review_case is HistoricalCaseType.REVIEW_CAREFULLY
+    assert _classification_case_type("mystery") is None
+
+    score = _match_score(
+        SonarIssue(
+            key="issue-no-ext",
+            rule="python:S1172",
+            severity="LOW",
+            message="Remove unused function parameter",
+            location=IssueLocation(path="Makefile", line=1),
+            issue_type="CODE_SMELL",
+            tags=(),
+            clean_code_attribute="CLEAR",
+            clean_code_attribute_category="INTENTIONAL",
+        ),
+        {
+            "rule": "python:S1172",
+            "message": "Remove unused function parameter",
+            "type": "CODE_SMELL",
+            "severity": "LOW",
+            "clean_code_attribute": "CLEAR",
+            "clean_code_attribute_category": "INTENTIONAL",
+            "file_extension": "no_extension",
+            "tags": [],
+        },
+    )
+    assert score == 0.95
+
+    case = _build_case(
+        _issue(),
+        DatasetMatch(
+            row_index=7,
+            score=0.95,
+            case_type=HistoricalCaseType.PREVIOUS_FIX,
+            classification="fix",
+            component="",
+        ),
+    )
+    assert case.confidence == 0.82
+    assert not any("matched dataset component" in item for item in case.evidence)
+
+
+def test_historical_context_prefers_dataset_when_local_history_is_missing() -> None:
+    summary = HistoricalEvidenceSummary(
+        source_name="dataset",
+        cases=(
+            HistoricalIssueCase(
+                issue_key="dataset:1",
+                rule="python:S1172",
+                message="Remove unused function parameter",
+                file_path="src/app.py",
+                line=12,
+                disposition="fix",
+                similarity_score=0.8,
+                confidence=0.8,
+                case_type=HistoricalCaseType.PREVIOUS_FIX,
+                evidence=(),
+            ),
+        ),
+        related_cases_count=1,
+        close_cases_count=1,
+        fixed_cases_count=1,
+        accepted_cases_count=0,
+        persistent_cases_count=0,
+    )
+
+    context = CombinedHistoricalContext(dataset=summary)
+
+    assert context.preferred_evidence() is summary
+    assert context.preferred_source_name() == "dataset"
 
 
 def _issue() -> SonarIssue:
