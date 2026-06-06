@@ -426,7 +426,8 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     (repo / ".env").write_text("# Existing app config\nEXISTING=value\n", encoding="utf-8")
-    private_key = tmp_path / "app-key.pem"
+    private_key = repo / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
+    private_key.parent.mkdir(parents=True, exist_ok=True)
     private_key.write_text(
         "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
         encoding="utf-8",
@@ -436,7 +437,7 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     result = runner.invoke(
         app,
         ["init"],
-        input=f"12345\n67890\n{private_key}\nsonar-token\nocto/example\ncontextpr\nplatform\n",
+        input="12345\n67890\nsonar-token\nocto/example\ncontextpr\nplatform\n",
         env={},
     )
 
@@ -454,9 +455,41 @@ def test_init_creates_repo_state_gitignore_hook_and_env(
     assert "CONTEXTPR_GITHUB_INSTALLATION_ID=67890" in env
     assert "CONTEXTPR_SONAR_TOKEN=sonar-token" in env
     assert "CONTEXTPR_LOCAL_HISTORY_DB_PATH=" in env
-    assert (repo / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem").read_text(
-        encoding="utf-8"
-    ) == private_key.read_text(encoding="utf-8")
+    assert "Using GitHub App private key from" in result.output
+
+
+def test_init_requires_repo_local_private_key_before_prompting_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["init"], env={})
+
+    assert result.exit_code != 0
+    assert "Place the PEM there and rerun `context-pr init`" in result.output
+    assert (repo / "secrets").is_dir()
+
+
+def test_init_rejects_invalid_repo_local_private_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    private_key = repo / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
+    private_key.parent.mkdir(parents=True, exist_ok=True)
+    private_key.write_text("not-a-pem", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["init"], env={})
+
+    assert result.exit_code != 0
+    assert "does not look like a PEM key" in result.output
 
 
 def test_safe_repo_file_rejects_paths_outside_repository(tmp_path: Path) -> None:
@@ -516,6 +549,7 @@ def test_update_runs_pip_upgrade_command(monkeypatch: pytest.MonkeyPatch) -> Non
     result = runner.invoke(app, ["update"], env={})
 
     assert result.exit_code == 0
+    assert "place your GitHub App PEM at `secrets/GITHUB_APP_PRIVATE_KEY.pem`" in result.output
     assert calls == [
         [
             "/opt/contextpr/bin/python",
@@ -550,6 +584,7 @@ def test_update_uses_pipx_when_running_from_pipx_venv(
     result = runner.invoke(app, ["update"], env={})
 
     assert result.exit_code == 0
+    assert "place your GitHub App PEM at `secrets/GITHUB_APP_PRIVATE_KEY.pem`" in result.output
     assert calls == [["pipx", "upgrade", "contextpr"]]
 
 

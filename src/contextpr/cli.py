@@ -238,6 +238,7 @@ def init(
             "Installing commit guard",
             lambda: _install_pre_commit_hook(root),
         )
+    _ensure_private_key_drawer(root)
     if configure_secrets:
         _configure_local_credentials(root)
 
@@ -290,6 +291,10 @@ def update(
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
     typer.echo("ContextPR update completed. Run `context-pr --version` to confirm.")
+    typer.echo(
+        "Before running `context-pr init`, place your GitHub App PEM at "
+        "`secrets/GITHUB_APP_PRIVATE_KEY.pem` inside the target repository."
+    )
 
 
 @app.command()
@@ -319,6 +324,9 @@ Local files created by init:
   .context-pr/                            Repo-local config and history database.
   .env                                    GitHub App and Sonar settings.
   secrets/GITHUB_APP_PRIVATE_KEY.pem      GitHub App private key.
+
+Before init can finish, place your GitHub App PEM at:
+  secrets/GITHUB_APP_PRIVATE_KEY.pem
 
 More detail:
   context-pr --help
@@ -566,6 +574,23 @@ def _install_pre_commit_hook(root: Path) -> None:
     hook_path.chmod(hook_path.stat().st_mode | 0o111)
 
 
+def _ensure_private_key_drawer(root: Path) -> None:
+    destination = root / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.is_file():
+        raise typer.BadParameter(
+            "ContextPR requires the GitHub App private key at "
+            f"{destination}. Place the PEM there and rerun `context-pr init`."
+        )
+
+    private_key = destination.read_text(encoding="utf-8").strip()
+    if "BEGIN" not in private_key or "PRIVATE KEY" not in private_key:
+        raise typer.BadParameter(
+            "The GitHub App private key at "
+            f"{destination} does not look like a PEM key."
+        )
+
+
 def _configure_local_credentials(root: Path) -> None:
     env_path = root / ".env"
     values = _read_env_values(env_path)
@@ -585,7 +610,6 @@ def _configure_local_credentials(root: Path) -> None:
             ),
         }
     )
-    _write_github_app_private_key(root)
     values.update(
         {
             "CONTEXTPR_SONAR_TOKEN": typer.prompt(
@@ -620,27 +644,9 @@ def _configure_local_credentials(root: Path) -> None:
     _write_env_values(env_path, values)
     typer.echo(f"Wrote local secrets to {env_path}.")
     typer.echo(
-        f"Wrote GitHub App private key to {root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
+        "Using GitHub App private key from "
+        f"{root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
     )
-
-
-def _write_github_app_private_key(root: Path) -> None:
-    destination = root / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
-    existing_default = str(destination) if destination.is_file() else ""
-    source = typer.prompt(
-        "GitHub App private key PEM file path",
-        default=existing_default,
-    )
-    source_path = Path(source).expanduser()
-    if not source_path.is_file():
-        raise typer.BadParameter(f"GitHub App private key file does not exist: {source_path}")
-
-    private_key = source_path.read_text(encoding="utf-8").strip()
-    if "BEGIN" not in private_key or "PRIVATE KEY" not in private_key:
-        raise typer.BadParameter("GitHub App private key file does not look like a PEM key.")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(private_key + "\n", encoding="utf-8")
 
 
 def _read_env_values(path: Path) -> dict[str, str]:

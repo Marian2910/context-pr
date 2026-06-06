@@ -96,6 +96,8 @@ ContextPR can be installed as a short CLI command and initialized inside any git
 pipx install git+https://github.com/Marian2910/context-pr.git
 
 cd path/to/your/repository
+mkdir -p secrets
+# place your GitHub App PEM at secrets/GITHUB_APP_PRIVATE_KEY.pem
 context-pr init
 context-pr help
 context-pr sync
@@ -112,14 +114,15 @@ context-pr uninstall
   history.db
 ```
 
-It also prompts for GitHub App credentials and Sonar credentials. The GitHub App ID,
-installation ID, repository, and Sonar settings are written to `.env`. If `.env` already exists,
-ContextPR updates it in place and preserves existing variables. The GitHub App private key is
-copied into:
+Before running `context-pr init`, place your GitHub App private key PEM at:
 
 ```bash
 secrets/GITHUB_APP_PRIVATE_KEY.pem
 ```
+
+Then `context-pr init` prompts for GitHub App metadata and Sonar credentials. The GitHub App ID,
+installation ID, repository, and Sonar settings are written to `.env`. If `.env` already exists,
+ContextPR updates it in place and preserves existing variables.
 
 The setup command automatically adds the local state and secret file to `.gitignore`:
 
