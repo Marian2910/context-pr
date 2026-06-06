@@ -6,6 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from contextpr.enrichment.history.dataset import DatasetHistoryRetriever
 from contextpr.enrichment.history import (
     CombinedHistoricalContext,
     EvidenceBackedGuidance,
@@ -51,8 +52,9 @@ class IssueEnricher:
         history_store: HistoryStore | None = None,
         repository_key: str | None = None,
     ) -> None:
-        _ = dataset_path, enable_local_git_history
+        _ = enable_local_git_history
         self._enable_local_history = enable_local_history
+        self._dataset_retriever = self._build_dataset_retriever(dataset_path)
         self._local_history_retriever: CaseHistoryRetriever | None = self._build_history_retriever(
             LocalSonarHistoryRetriever,
             enable_local_history=enable_local_history,
@@ -80,12 +82,15 @@ class IssueEnricher:
         return {issue.key: self.enrich(issue) for issue in issues}
 
     def _historical_context(self, issue: SonarIssue) -> CombinedHistoricalContext:
-        if not self._enable_local_history or self._local_history_retriever is None:
-            return CombinedHistoricalContext()
+        local_sonar = None
+        if self._enable_local_history and self._local_history_retriever is not None:
+            local_sonar = self._local_history_retriever.find_context(issue)
 
-        return CombinedHistoricalContext(
-            local_sonar=self._local_history_retriever.find_context(issue),
-        )
+        dataset = None
+        if local_sonar is None and self._dataset_retriever is not None:
+            dataset = self._dataset_retriever.find_context(issue)
+
+        return CombinedHistoricalContext(local_sonar=local_sonar, dataset=dataset)
 
     def _build_guidance(
         self,
@@ -137,24 +142,34 @@ class IssueEnricher:
     ) -> str:
         total = max(summary.close_cases_count, summary.related_cases_count)
         file_suffix = cls._file_suffix(issue, summary)
+        history_scope = (
+            "cross-project dataset matches"
+            if summary.source_name == "dataset"
+            else "close historical matches"
+        )
+        singular_history_scope = (
+            "cross-project dataset match"
+            if summary.source_name == "dataset"
+            else "close historical match"
+        )
         if case.case_type is HistoricalCaseType.DEFERRED:
             deferred_count = summary.accepted_cases_count + summary.persistent_cases_count
             return (
-                f"{deferred_count} of {total} close historical matches for `{issue.rule}` "
+                f"{deferred_count} of {total} {history_scope} for `{issue.rule}` "
                 f"were accepted or left open{file_suffix}."
             )
         if case.case_type is HistoricalCaseType.PERSISTENT:
             return (
-                f"{summary.persistent_cases_count} of {total} close historical matches for "
+                f"{summary.persistent_cases_count} of {total} {history_scope} for "
                 f"`{issue.rule}` remained open{file_suffix}."
             )
         if case.case_type is HistoricalCaseType.REVIEW_CAREFULLY:
             return (
-                f"the closest historical match for `{issue.rule}` is behavior-sensitive "
+                f"the closest {singular_history_scope} for `{issue.rule}` is behavior-sensitive "
                 f"and scored {round(case.confidence * 100)}% confidence{file_suffix}."
             )
         return (
-            f"{summary.fixed_cases_count} of {total} close historical matches for "
+            f"{summary.fixed_cases_count} of {total} {history_scope} for "
             f"`{issue.rule}` were fixed{file_suffix}."
         )
 
@@ -175,3 +190,9 @@ class IssueEnricher:
         if not enable_local_history or history_store is None or repository_key is None:
             return None
         return retriever_factory(history_store, repository_key)
+
+    @staticmethod
+    def _build_dataset_retriever(dataset_path: Path | None) -> CaseHistoryRetriever | None:
+        if dataset_path is None or not dataset_path.is_file():
+            return None
+        return DatasetHistoryRetriever(dataset_path)

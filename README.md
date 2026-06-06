@@ -29,7 +29,7 @@ The current analysis pipeline is:
 1. Load runtime configuration.
 2. Read Sonar pull request analysis results.
 3. Optionally synchronize local Sonar, Git, and GitHub history into a SQLite store.
-4. Enrich issues only when local Sonar history provides a concrete historical case with enough confidence.
+4. Enrich issues from local Sonar history when possible, or fall back to the curated cross-project dataset when no qualifying local history exists.
 5. Generate review-ready comment text.
 6. Post inline GitHub pull request comments.
 
@@ -217,14 +217,13 @@ git.
 
 ## Dataset mode
 
-Older ContextPR prototypes used a curated cross-repository dataset as a cold-start fallback for
-inline comments. The current case-based implementation does not use that dataset in the
-enrichment path.
+ContextPR can use a curated cross-repository dataset as a cold-start fallback for inline
+comments when repository-local history is missing or too weak to pass the confidence gate.
 
-The dataset path is still accepted in configuration for backward compatibility, and the dataset
-normalization utility remains available for offline experiments. `contextpr analyze` does not
-load the dataset. Weak or missing local Sonar history means ContextPR stays silent and leaves the
-baseline Sonar finding unchanged.
+The dataset is still secondary to local Sonar history. If both exist, ContextPR prefers the
+repository-local evidence. When the dataset fallback is used, the PR comment adds a disclaimer
+that the confidence is based on similar cross-project issues and should be treated as a fallback
+signal rather than repository-specific precedent.
 
 ### Dataset artifact
 
@@ -233,6 +232,8 @@ The dataset is optional and not required for the main local-history workflow.
 - If you want only repository-local enrichment, you do not need to provide the dataset file.
 - If you are running offline experiments, you can still provide a dataset file through
   `CONTEXTPR_ISSUE_DATASET_PATH`.
+- When it is provided, ContextPR uses it only as a fallback when local history does not yield a
+  confident historical case.
 
 The default configured path is:
 
@@ -246,8 +247,8 @@ provided locally for experiments rather than stored in version control.
 ## Comment style
 
 ContextPR does not add text to every Sonar issue. It prefers silence over weak enrichment and
-adds repository context only when local Sonar history produces a scored historical case with at
-least 70% confidence.
+adds context only when either local Sonar history or the fallback dataset produces a scored
+historical case with at least 70% confidence.
 
 The default enriched comment shape is compact:
 
@@ -256,6 +257,8 @@ The default enriched comment shape is compact:
 
 ContextPR: <decision> · <confidence>% confidence
 Reason: <one compact evidence sentence>
+
+<optional fallback disclaimer for cross-project dataset evidence>
 
 <optional closest precedent link>
 ```

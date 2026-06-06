@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from contextpr.data.dataset import TARGET_COLUMN, load_dataset
+from contextpr.data.dataset import TARGET_COLUMN, load_dataset, load_dataset_file
 
 
 def test_load_dataset_normalizes_runtime_fields() -> None:
@@ -92,3 +92,27 @@ def test_load_dataset_requires_expected_columns() -> None:
 
     with pytest.raises(ValueError, match="Dataset is missing required columns"):
         load_dataset(frame)
+
+
+def test_load_dataset_file_reads_csv(tmp_path) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    pd.DataFrame(
+        [
+            {
+                "message": "Remove unused parameter",
+                "rule": "python:S1172",
+                "type": "CODE_SMELL",
+                "tags": "['unused']",
+                "clean_code_attribute": "CLEAR",
+                "clean_code_attribute_category": "INTENTIONAL",
+                "impacts": "[{'severity': 'low'}]",
+                "component": "repo:src/app.py",
+                TARGET_COLUMN: "fix",
+            }
+        ]
+    ).to_csv(dataset_path, index=False)
+
+    normalized = load_dataset_file(dataset_path)
+
+    assert len(normalized) == 1
+    assert normalized.iloc[0]["severity"] == "LOW"

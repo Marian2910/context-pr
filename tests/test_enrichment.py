@@ -25,7 +25,7 @@ def test_issue_enricher_requires_store_when_local_history_is_enabled() -> None:
         enricher.enrich(_issue())
 
 
-def test_global_dataset_no_longer_creates_inline_enrichment(tmp_path: Path) -> None:
+def test_dataset_builds_fallback_enrichment_when_local_history_is_missing(tmp_path: Path) -> None:
     dataset_path = tmp_path / "issues.csv"
     dataset_path.write_text(
         "\n".join(
@@ -39,7 +39,57 @@ def test_global_dataset_no_longer_creates_inline_enrichment(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    assert IssueEnricher(dataset_path=dataset_path).enrich(_issue()) is None
+    enrichment = IssueEnricher(dataset_path=dataset_path).enrich(_issue())
+
+    assert enrichment is not None
+    evidence = enrichment.guidance.evidence
+    assert evidence.decision == "likely worth fixing now"
+    assert evidence.case_type is HistoricalCaseType.PREVIOUS_FIX
+    assert enrichment.historical_context.preferred_source_name() == "dataset"
+    assert "cross-project dataset matches" in evidence.reason
+
+
+def test_local_history_stays_preferred_over_dataset_fallback(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "issues.csv"
+    dataset_path.write_text(
+        "\n".join(
+            [
+                "message,rule,type,tags,clean_code_attribute,clean_code_attribute_category,"
+                "impacts,component,ccs_classification,creation_date",
+                '"Remove unused function parameter",python:S1172,CODE_SMELL,'
+                '"[\'unused\']",CLEAR,INTENTIONAL,"[]",repo:src/app.py,defer,2024-01-01',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = HistoryStore(tmp_path / "history.db")
+    for index in range(1, 4):
+        store.upsert_sonar_issue(
+            "octo/example",
+            SonarIssueRecord(
+                issue_key=f"fixed-{index}",
+                rule="python:S1172",
+                issue_type="CODE_SMELL",
+                severity="LOW",
+                component="src/app.py",
+                message="Remove unused function parameter",
+                status="CLOSED",
+                resolution="FIXED",
+                updated_at=f"2026-05-15T1{index}:00:00+00:00",
+                line=20 + index,
+            ),
+        )
+
+    enrichment = IssueEnricher(
+        dataset_path=dataset_path,
+        enable_local_history=True,
+        history_store=store,
+        repository_key="octo/example",
+    ).enrich(_issue())
+
+    assert enrichment is not None
+    assert enrichment.historical_context.preferred_source_name() == "local_sonar"
+    assert enrichment.guidance.evidence.decision == "likely worth fixing now"
 
 
 def test_local_sonar_fixed_case_builds_compact_guidance(tmp_path: Path) -> None:
