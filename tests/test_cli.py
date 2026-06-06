@@ -6,7 +6,7 @@ import pytest
 from typer import BadParameter
 from typer.testing import CliRunner
 
-from contextpr.cli import _safe_repo_file, app
+from contextpr.cli import _read_env_values, _safe_repo_file, _write_env_values, app
 from contextpr.config import Settings
 from contextpr.integrations.github import (
     LOCAL_GITHUB_COMMIT_SYNC_SOURCE,
@@ -465,6 +465,17 @@ def test_safe_repo_file_rejects_paths_outside_repository(tmp_path: Path) -> None
 
     with pytest.raises(BadParameter, match="outside repository root"):
         _safe_repo_file(repo, "../.gitignore")
+
+
+def test_write_env_values_updates_only_repo_root_env_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text("# Existing\nFOO=bar\n", encoding="utf-8")
+
+    _write_env_values(repo, {"FOO": "baz", "BAR": "qux"})
+
+    assert _read_env_values(repo) == {"FOO": "baz", "BAR": "qux"}
+    assert not (tmp_path / ".env").exists()
 
 
 def test_guard_passes_when_local_paths_are_not_tracked(

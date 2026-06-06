@@ -54,6 +54,10 @@ if [ -n "$blocked" ]; then
   exit 1
 fi
 """
+GITIGNORE_FILENAME = ".gitignore"
+ENV_FILENAME = ".env"
+PRE_COMMIT_HOOK_FILENAME = "pre-commit"
+GITHUB_APP_PRIVATE_KEY_FILENAME = "GITHUB_APP_PRIVATE_KEY.pem"
 
 
 def version_callback(value: bool | None) -> None:
@@ -532,14 +536,13 @@ def _ensure_repo_state(root: Path) -> Path:
 
 
 def _ensure_repo_gitignore_entries(root: Path, entries: tuple[str, ...]) -> None:
-    path = _safe_repo_file(root, ".gitignore")
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = _read_repo_text(root, GITIGNORE_FILENAME)
     lines = existing.splitlines()
     missing = [entry for entry in entries if entry not in lines]
     if not missing:
         return
     prefix = "\n" if existing and not existing.endswith("\n") else ""
-    path.write_text(existing + prefix + "\n".join(missing) + "\n", encoding="utf-8")
+    _write_repo_text(root, GITIGNORE_FILENAME, existing + prefix + "\n".join(missing) + "\n")
 
 
 def _safe_repo_file(root: Path, filename: str) -> Path:
@@ -550,12 +553,24 @@ def _safe_repo_file(root: Path, filename: str) -> Path:
     return candidate
 
 
+def _read_repo_text(root: Path, filename: str) -> str:
+    path = _safe_repo_file(root, filename)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _write_repo_text(root: Path, filename: str, content: str) -> None:
+    path = _safe_repo_file(root, filename)
+    path.write_text(content, encoding="utf-8")
+
+
 def _install_pre_commit_hook(root: Path) -> None:
     hooks_dir = root / ".git" / "hooks"
     if not hooks_dir.is_dir():
         typer.echo("Skipping pre-commit hook installation because .git/hooks was not found.")
         return
-    hook_path = hooks_dir / "pre-commit"
+    hook_path = hooks_dir / PRE_COMMIT_HOOK_FILENAME
     if hook_path.exists():
         existing = hook_path.read_text(encoding="utf-8")
         if "ContextPR refuses to commit local state or secrets" in existing:
@@ -567,8 +582,7 @@ def _install_pre_commit_hook(root: Path) -> None:
 
 
 def _configure_local_credentials(root: Path) -> None:
-    env_path = root / ".env"
-    values = _read_env_values(env_path)
+    values = _read_env_values(root)
     values.update(
         {
             "CONTEXTPR_GITHUB_APP_ID": typer.prompt(
@@ -617,15 +631,15 @@ def _configure_local_credentials(root: Path) -> None:
             "CONTEXTPR_LOCAL_HISTORY_DB_PATH": str(root / REPO_STATE_DIR_NAME / "history.db"),
         }
     )
-    _write_env_values(env_path, values)
-    typer.echo(f"Wrote local secrets to {env_path}.")
+    _write_env_values(root, values)
+    typer.echo(f"Wrote local secrets to {root / ENV_FILENAME}.")
     typer.echo(
-        f"Wrote GitHub App private key to {root / 'secrets' / 'GITHUB_APP_PRIVATE_KEY.pem'}."
+        f"Wrote GitHub App private key to {root / 'secrets' / GITHUB_APP_PRIVATE_KEY_FILENAME}."
     )
 
 
 def _write_github_app_private_key(root: Path) -> None:
-    destination = root / "secrets" / "GITHUB_APP_PRIVATE_KEY.pem"
+    destination = root / "secrets" / GITHUB_APP_PRIVATE_KEY_FILENAME
     existing_default = str(destination) if destination.is_file() else ""
     source = typer.prompt(
         "GitHub App private key PEM file path",
@@ -643,11 +657,12 @@ def _write_github_app_private_key(root: Path) -> None:
     destination.write_text(private_key + "\n", encoding="utf-8")
 
 
-def _read_env_values(path: Path) -> dict[str, str]:
-    if not path.exists():
+def _read_env_values(root: Path) -> dict[str, str]:
+    raw_content = _read_repo_text(root, ENV_FILENAME)
+    if not raw_content:
         return {}
     values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in raw_content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -656,27 +671,27 @@ def _read_env_values(path: Path) -> dict[str, str]:
     return values
 
 
-def _write_env_values(path: Path, values: dict[str, str]) -> None:
+def _write_env_values(root: Path, values: dict[str, str]) -> None:
     remaining = {key for key, value in values.items() if value}
     output: list[str] = []
-    if path.exists():
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in raw_line:
-                output.append(raw_line)
-                continue
-            key, _value = raw_line.split("=", 1)
-            normalized_key = key.strip()
-            if normalized_key in values and values[normalized_key]:
-                output.append(f"{normalized_key}={values[normalized_key]}")
-                remaining.discard(normalized_key)
-            else:
-                output.append(raw_line)
+    existing = _read_repo_text(root, ENV_FILENAME)
+    for raw_line in existing.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            output.append(raw_line)
+            continue
+        key, _value = raw_line.split("=", 1)
+        normalized_key = key.strip()
+        if normalized_key in values and values[normalized_key]:
+            output.append(f"{normalized_key}={values[normalized_key]}")
+            remaining.discard(normalized_key)
+        else:
+            output.append(raw_line)
 
     if output and output[-1].strip():
         output.append("")
     output.extend(f"{key}={values[key]}" for key in values if key in remaining)
-    path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    _write_repo_text(root, ENV_FILENAME, "\n".join(output) + "\n")
 
 
 def _tracked_local_paths(root: Path) -> list[str]:
