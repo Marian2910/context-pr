@@ -149,49 +149,47 @@ class IssueEnricher:
         summary: HistoricalEvidenceSummary,
         case: HistoricalIssueCase,
     ) -> str:
-        total = max(summary.close_cases_count, summary.related_cases_count)
         file_suffix = cls._file_suffix(issue, summary)
         history_scope = (
-            "cross-project dataset matches"
+            "cross-project dataset history"
             if summary.source_name == "dataset"
-            else "close historical matches"
+            else "repository history"
         )
         singular_history_scope = (
-            "cross-project dataset match"
+            "cross-project dataset precedent"
             if summary.source_name == "dataset"
-            else "close historical match"
+            else "historical precedent"
         )
         if case.case_type is HistoricalCaseType.DEFERRED:
-            deferred_count = summary.accepted_cases_count + summary.persistent_cases_count
             if cls._requires_security_review(issue):
                 return (
-                    f"{deferred_count} of {total} {history_scope} for `{issue.rule}` "
-                    "were accepted or left open, but this security-sensitive finding "
+                    f"{history_scope.capitalize()} for `{issue.rule}` shows accepted or open "
+                    "cases, but this security-sensitive finding "
                     f"still needs manual review{file_suffix}."
                 )
             return (
-                f"{deferred_count} of {total} {history_scope} for `{issue.rule}` "
-                f"were accepted or left open{file_suffix}."
+                f"{history_scope.capitalize()} for `{issue.rule}` includes accepted or open "
+                f"cases{file_suffix}."
             )
         if case.case_type is HistoricalCaseType.PERSISTENT:
             if cls._requires_security_review(issue):
                 return (
-                    f"{summary.persistent_cases_count} of {total} {history_scope} for "
-                    f"`{issue.rule}` remained open, but this security-sensitive finding "
+                    f"{history_scope.capitalize()} for `{issue.rule}` includes open cases, but "
+                    "this security-sensitive finding "
                     f"still needs manual review{file_suffix}."
                 )
             return (
-                f"{summary.persistent_cases_count} of {total} {history_scope} for "
-                f"`{issue.rule}` remained open{file_suffix}."
+                f"{history_scope.capitalize()} for `{issue.rule}` includes similar open cases"
+                f"{file_suffix}."
             )
         if case.case_type is HistoricalCaseType.REVIEW_CAREFULLY:
             return (
-                f"the closest {singular_history_scope} for `{issue.rule}` is behavior-sensitive "
-                f"and scored {round(case.confidence * 100)}% confidence{file_suffix}."
+                f"the closest same-rule {singular_history_scope} for `{issue.rule}` "
+                f"needs extra review{file_suffix}."
             )
         return (
-            f"{summary.fixed_cases_count} of {total} {history_scope} for "
-            f"`{issue.rule}` were fixed{file_suffix}."
+            f"{history_scope.capitalize()} for `{issue.rule}` includes similar cases that were "
+            f"fixed{file_suffix}."
         )
 
     @staticmethod

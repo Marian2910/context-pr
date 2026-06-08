@@ -128,8 +128,8 @@ def test_analyze_pull_request_posts_compact_evidence_comment() -> None:
     assert comments[0].start_line == 11
     assert comments[0].line == 12
     assert "First issue." in comments[0].body
-    assert "ContextPR: likely worth fixing now · 86% confidence" in comments[0].body
-    assert "Closest precedent:" in comments[0].body
+    assert "ContextPR: likely worth fixing now · historical match score of 86%" in comments[0].body
+    assert "Closest precedent:" not in comments[0].body
     assert "appeared multiple times" not in comments[0].body
     assert github_client.deleted_comment_ids == [99]
 
@@ -255,7 +255,7 @@ def _enrichment(case_key: str) -> IssueEnrichment:
             evidence=EvidenceBackedGuidance(
                 decision="likely worth fixing now",
                 confidence=0.86,
-                reason="4 of 5 close historical matches for `python:S100` were fixed.",
+                reason="Repository history for `python:S100` includes similar cases that were fixed.",
                 case_type=HistoricalCaseType.PREVIOUS_FIX,
                 case_key=case_key,
                 precedent_url="https://github.com/org/repo/pull/9/files",

@@ -55,7 +55,7 @@ def test_dataset_builds_fallback_enrichment_when_local_history_is_missing(tmp_pa
     assert evidence.decision == "likely worth fixing now"
     assert evidence.case_type is HistoricalCaseType.PREVIOUS_FIX
     assert enrichment.historical_context.preferred_source_name() == "dataset"
-    assert "cross-project dataset matches" in evidence.reason
+    assert "Cross-project dataset history" in evidence.reason
 
 
 def test_local_history_stays_preferred_over_dataset_fallback(tmp_path: Path) -> None:
@@ -145,7 +145,7 @@ def test_local_sonar_fixed_case_builds_compact_guidance(tmp_path: Path) -> None:
     assert evidence.precedent_url == "https://github.com/octo/example/pull/42/files"
     assert evidence.precedent_pr_number == 42
     assert any("historical issue was near line" in item for item in evidence.precedent_evidence)
-    assert "4 of 4 close historical matches for `python:S1172` were fixed" in evidence.reason
+    assert "Repository history for `python:S1172` includes similar cases that were fixed" in evidence.reason
     assert "including one in this file" in evidence.reason
 
 
@@ -187,7 +187,7 @@ def test_local_sonar_accepted_cases_build_defer_guidance(tmp_path: Path) -> None
     evidence = enrichment.guidance.evidence
     assert evidence.decision == "safe to defer"
     assert evidence.case_type is HistoricalCaseType.DEFERRED
-    assert "accepted or left open" in evidence.reason
+    assert "includes accepted or open cases" in evidence.reason
 
 
 def test_security_vulnerability_never_builds_safe_to_defer_guidance(tmp_path: Path) -> None:

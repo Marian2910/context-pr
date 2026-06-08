@@ -104,6 +104,7 @@ class ReviewCommentComposer:
 
         evidence = enrichment.guidance.evidence
         confidence = round(evidence.confidence * 100)
+        disclaimer = self.fallback_disclaimer(enrichment)
         if (
             evidence.precedent_url is not None
             and evidence.precedent_pr_number is not None
@@ -111,17 +112,17 @@ class ReviewCommentComposer:
         ):
             return self.detailed_precedent_note(issue, enrichment)
 
+        summary = f"ContextPR: {evidence.decision} · historical match score of {confidence}%"
+        if disclaimer is None:
+            summary = f"{summary} \nReason: {evidence.reason}"
+
         sections = [
             self.normalize_sentence(issue.message),
-            (
-                f"ContextPR: {evidence.decision} · {confidence}% confidence  \n"
-                f"Reason: {evidence.reason}"
-            ),
+            summary,
         ]
-        disclaimer = self.fallback_disclaimer(enrichment)
         if disclaimer is not None:
             sections.append(disclaimer)
-        if evidence.precedent_url is not None:
+        if evidence.precedent_url is not None and evidence.confidence >= 0.9:
             sections.append(f"Closest precedent:\n{evidence.precedent_url}")
         return "\n\n".join(sections)
 
@@ -134,8 +135,8 @@ class ReviewCommentComposer:
                 self.normalize_sentence(issue.message),
                 (
                     "A similar fixed case is linked to "
-                    f"PR #{evidence.precedent_pr_number}, with {confidence}% "
-                    "confidence from Sonar resolution history."
+                    f"PR #{evidence.precedent_pr_number}, with a {confidence}% "
+                    "historical match score from Sonar resolution history."
                 ),
                 f"Why this match is shown:\n\n{evidence_lines}",
                 f"Previous fix:\n{evidence.precedent_url}",
@@ -150,8 +151,7 @@ class ReviewCommentComposer:
         if source_name != "dataset":
             return None
         return (
-            "Fallback: this confidence is based on similar cross-project issues from the "
-            "curated dataset, so treat it as a cold-start signal."
+            "Note: this historical match score is based on similar cross-project issues."
         )
 
     @staticmethod

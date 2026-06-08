@@ -26,8 +26,8 @@ def test_review_comment_uses_compact_evidence_format() -> None:
                     decision="likely worth fixing now",
                     confidence=0.86,
                     reason=(
-                        "4 of 5 close historical matches for `python:S1192` were fixed, "
-                        "including one in this file."
+                        "Repository history for `python:S1192` includes similar cases that were "
+                        "fixed, including one in this file."
                     ),
                     case_type=HistoricalCaseType.PREVIOUS_FIX,
                     case_key="fixed-1",
@@ -40,11 +40,9 @@ def test_review_comment_uses_compact_evidence_format() -> None:
 
     assert note == (
         "Define a constant instead of duplicating this literal 3 times.\n\n"
-        "ContextPR: likely worth fixing now · 86% confidence  \n"
-        "Reason: 4 of 5 close historical matches for `python:S1192` were fixed, "
-        "including one in this file.\n\n"
-        "Closest precedent:\n"
-        "https://github.com/org/repo/pull/9/files"
+        "ContextPR: likely worth fixing now · historical match score of 86% \n"
+        "Reason: Repository history for `python:S1192` includes similar cases that were fixed, "
+        "including one in this file."
     )
     assert "appeared multiple times" not in note
     assert "This seems worth fixing" not in note
@@ -70,8 +68,8 @@ def test_review_comment_uses_detailed_template_for_high_confidence_precedent() -
                     decision="likely worth fixing now",
                     confidence=0.94,
                     reason=(
-                        "4 of 5 close historical matches for `python:S1192` were fixed, "
-                        "including one in this file."
+                        "Repository history for `python:S1192` includes similar cases that were "
+                        "fixed, including one in this file."
                     ),
                     case_type=HistoricalCaseType.PREVIOUS_FIX,
                     case_key="fixed-1",
@@ -92,7 +90,7 @@ def test_review_comment_uses_detailed_template_for_high_confidence_precedent() -
     assert note == (
         "Define a constant instead of duplicating this literal "
         "'ContextPR similarity baseline for historical sonar issues' 3 times.\n\n"
-        "A similar fixed case is linked to PR #9, with 94% confidence from Sonar "
+        "A similar fixed case is linked to PR #9, with a 94% historical match score from Sonar "
         "resolution history.\n\n"
         "Why this match is shown:\n\n"
         "- same Sonar rule `python:S1192`\n"
@@ -121,8 +119,7 @@ def test_review_comment_omits_precedent_when_no_link_exists() -> None:
                     decision="safe to defer",
                     confidence=0.78,
                     reason=(
-                        "6 of 8 close historical matches for `python:S1066` were accepted "
-                        "or left open."
+                        "Repository history for `python:S1066` includes accepted or open cases."
                     ),
                     case_type=HistoricalCaseType.DEFERRED,
                     case_key="accepted-1",
@@ -132,8 +129,40 @@ def test_review_comment_omits_precedent_when_no_link_exists() -> None:
         ),
     )
 
-    assert "ContextPR: safe to defer · 78% confidence" in note
+    assert "ContextPR: safe to defer · historical match score of 78%" in note
     assert "Closest precedent:" not in note
+
+
+def test_review_comment_omits_precedent_for_non_high_confidence_match() -> None:
+    note = ReviewCommentComposer().reviewer_note(
+        SonarIssue(
+            key="issue-s1481",
+            rule="python:S1481",
+            severity="LOW",
+            message='Remove the unused local variable "unused_diagnostic_marker".',
+            location=IssueLocation(path="src/app.py", line=12),
+            issue_type="CODE_SMELL",
+        ),
+        IssueEnrichment(
+            guidance=DeveloperGuidance(
+                level=GuidanceLevel.CONTEXTUAL,
+                evidence=EvidenceBackedGuidance(
+                    decision="review carefully",
+                    confidence=0.79,
+                    reason="the closest same-rule historical match for `python:S1481` needs extra review.",
+                    case_type=HistoricalCaseType.REVIEW_CAREFULLY,
+                    case_key="case-1481",
+                    precedent_url="https://github.com/marian2910/httpie/pull/9/files",
+                    precedent_pr_number=9,
+                ),
+            ),
+            historical_context=None,
+        ),
+    )
+
+    assert "Closest precedent:" not in note
+    assert "https://github.com/marian2910/httpie/pull/9/files" not in note
+    assert "closest same-rule historical match" in note
 
 
 def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
@@ -143,7 +172,10 @@ def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
             evidence=EvidenceBackedGuidance(
                 decision="likely worth fixing now",
                 confidence=0.82,
-                reason="3 of 5 cross-project dataset matches for `python:S1172` were fixed.",
+                reason=(
+                    "Cross-project dataset history for `python:S1172` includes similar cases "
+                    "that were fixed."
+                ),
                 case_type=HistoricalCaseType.PREVIOUS_FIX,
                 case_key="dataset:4",
             ),
@@ -172,7 +204,53 @@ def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
         enriched,
     )
 
-    assert "Fallback: this confidence is based on similar cross-project issues" in note
+    assert "Note: this historical match score is based on similar cross-project issues." in note
+    assert "Reason:" not in note
+
+
+def test_dataset_reason_does_not_expose_candidate_counts() -> None:
+    enriched = IssueEnrichment(
+        guidance=DeveloperGuidance(
+            level=GuidanceLevel.CONTEXTUAL,
+            evidence=EvidenceBackedGuidance(
+                decision="likely worth fixing now",
+                confidence=0.82,
+                reason=(
+                    "Cross-project dataset history for `python:S1172` includes similar cases "
+                    "that were fixed."
+                ),
+                case_type=HistoricalCaseType.PREVIOUS_FIX,
+                case_key="dataset:9",
+            ),
+        ),
+        historical_context=CombinedHistoricalContext(
+            dataset=HistoricalEvidenceSummary(
+                source_name="dataset",
+                cases=(),
+                related_cases_count=241,
+                close_cases_count=5,
+                fixed_cases_count=5,
+                accepted_cases_count=0,
+                persistent_cases_count=0,
+            )
+        ),
+    )
+    note = ReviewCommentComposer().reviewer_note(
+        SonarIssue(
+            key="issue-s1172",
+            rule="python:S1172",
+            severity="LOW",
+            message="Remove unused function parameter",
+            location=IssueLocation(path="src/app.py", line=12),
+            issue_type="CODE_SMELL",
+        ),
+        enriched,
+    )
+
+    assert "ContextPR: likely worth fixing now · historical match score of 82%" in note
+    assert "Reason:" not in note
+    assert "5 of 241" not in note
+    assert "5 of 5" not in note
 
 
 def test_review_comment_helpers_cover_remaining_branches() -> None:
