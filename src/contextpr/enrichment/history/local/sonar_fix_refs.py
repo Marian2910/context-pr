@@ -8,7 +8,7 @@ from contextpr.enrichment.history.types import (
     FIX_REFERENCE_PR_LIMIT,
     FIX_REFERENCE_RECORD_LIMIT,
     MAX_FIX_ATTRIBUTION_DELAY_DAYS,
-    MIN_FIX_REFERENCE_CONFIDENCE,
+    MIN_FIX_REFERENCE_MATCH_SCORE,
     MIN_FIX_REFERENCE_RECORD_SCORE,
     MIN_FIX_REFERENCE_WINDOW_PRS,
     HistoricalFixReference,
@@ -140,8 +140,8 @@ def fix_reference_for_record(
     candidates.sort(key=lambda item: (item[1], -item[0].pr_number))
     pull_request = candidates[0][0]
     files = files_by_pr.get(pull_request.pr_number, [])
-    confidence = fix_reference_confidence(issue, record, files)
-    if confidence < MIN_FIX_REFERENCE_CONFIDENCE:
+    match_score = fix_reference_match_score(issue, record, files)
+    if match_score < MIN_FIX_REFERENCE_MATCH_SCORE:
         return None
     return HistoricalFixReference(
         pr_number=pull_request.pr_number,
@@ -150,7 +150,7 @@ def fix_reference_for_record(
         file_url=f"{pull_request_url(repository_key, pull_request.pr_number)}/files",
         file_path=record_path,
         resolved_at=record.updated_at or "",
-        confidence=confidence,
+        match_score=match_score,
         evidence=fix_reference_evidence(issue, record, files),
     )
 
@@ -183,27 +183,27 @@ def bounded_fix_reference_pull_requests(
     return count_window
 
 
-def fix_reference_confidence(
+def fix_reference_match_score(
     issue: SonarIssue,
     record: SonarIssueRecord,
     files: list[PullRequestFileRecord],
 ) -> float:
     record_path = component_path(record.component)
-    confidence = 0.0
+    match_score = 0.0
     if record.rule == issue.rule:
-        confidence += 0.3
-    confidence += location_confidence_bonus(issue.location.path, record_path)
+        match_score += 0.3
+    match_score += location_match_score_bonus(issue.location.path, record_path)
     if any(file_record.file_path == record_path for file_record in files):
-        confidence += 0.2
-    confidence += 0.15 * sonar_scoring.code_similarity(issue, record)
+        match_score += 0.2
+    match_score += 0.15 * sonar_scoring.code_similarity(issue, record)
     if record.line is not None:
-        confidence += 0.05
+        match_score += 0.05
     if not any(is_analysis_config_path(file_record.file_path) for file_record in files):
-        confidence += 0.05
-    return round(min(confidence, 1.0), 2)
+        match_score += 0.05
+    return round(min(match_score, 1.0), 2)
 
 
-def location_confidence_bonus(issue_path: str, record_path: str) -> float:
+def location_match_score_bonus(issue_path: str, record_path: str) -> float:
     if record_path == issue_path and issue_path:
         return 0.25
     if path_family(record_path) == path_family(issue_path):
@@ -236,7 +236,7 @@ def fix_reference_evidence(
     if record.line is not None:
         evidence.append(f"historical issue was near line {record.line}")
     if any(is_analysis_config_path(file_record.file_path) for file_record in files):
-        evidence.append("PR also touched analysis configuration, so confidence is lower")
+        evidence.append("PR also touched analysis configuration, so the match score is lower")
     return tuple(evidence)
 
 

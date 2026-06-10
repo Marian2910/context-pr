@@ -418,9 +418,13 @@ def test_sync_pull_request_record_returns_none_when_payload_is_invalid(
 
 
 def _client() -> GitHubClient:
-    return GitHubClient(
+    client = GitHubClient(
         Settings(
-            github_token="workflow-token",
+            github_app_id="12345",
+            github_installation_id="67890",
+            github_private_key="-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
             github_repository="octo/example",
         )
     )
+    client._auth._installation_token = "installation-token"
+    return client

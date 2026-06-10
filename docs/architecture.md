@@ -1,176 +1,102 @@
 # Architecture Notes
 
-## Purpose
+## Goal
 
-ContextPR is intended to connect static analysis findings with pull request review workflows.
-It fetches SonarQube or SonarCloud pull request issues, selectively enriches them with
-case-based historical context, and publishes high-signal inline review comments on GitHub.
+ContextPR connects Sonar pull request findings with GitHub review comments.
 
-The current design intentionally avoids adding text to every issue. ContextPR should add
-developer-facing context only when it is likely to reduce ambiguity, support triage, or provide
-useful historical evidence beyond the original Sonar message.
+The project is designed to stay deterministic and easy to explain:
 
-## Current codebase
+- Sonar findings are the source input.
+- GitHub is the review output.
+- Local repository history is the main evidence source.
+- Cross-project dataset evidence is only a fallback.
 
-The codebase is organized around a few package boundaries:
-
-- `contextpr.cli` exposes the command line interface.
-- `contextpr.config` centralizes environment-backed settings.
-- `contextpr.logging_config` sets structured-friendly logging defaults.
-- `action.yml` exposes the packaged CLI as a reusable GitHub Action.
-- `contextpr.integrations` owns GitHub and SonarQube/SonarCloud API communication.
-- `contextpr.enrichment` owns selective issue contextualisation.
-- `contextpr.models` contains typed domain objects shared across modules.
-- `contextpr.services` orchestrates pull request analysis and comment composition.
-- `contextpr.utils` contains small reusable helper functions.
-
-## Request flow
+## Main flow
 
 ```text
-CLI -> configuration -> SonarQube client -> enrichment services -> GitHub client
+CLI -> config -> SonarQube client -> enrichment -> review composer -> GitHub client
 ```
 
-When used through GitHub Actions, the flow becomes:
+For one pull request, the runtime flow is:
 
-```text
-Workflow -> action.yml -> Docker container -> contextpr analyze
-```
+1. load configuration
+2. fetch Sonar issues for the PR
+3. optionally sync local history into SQLite
+4. get changed PR files and lines from GitHub
+5. retrieve similar historical cases
+6. keep only strong matches
+7. compose inline review comments
+8. post comments to GitHub
 
-The orchestration flow is:
+## Code layout
 
-1. Resolve configuration and runtime options.
-2. Retrieve pull request issue data from SonarQube or SonarCloud.
-3. Optionally synchronize local Sonar, Git, pull request, and review-comment history into the
-   SQLite store.
-4. Retrieve changed pull request lines from GitHub.
-5. Keep only Sonar issues that can be attached to newly changed lines.
-6. Retrieve ranked historical Sonar cases from the local repository history store.
-7. Build enriched guidance only when the best case reaches the confidence gate.
-8. Compose concise review comments.
-9. Post or preview inline GitHub review comments.
+- `contextpr.cli`: command-line package
+- `contextpr.config`: environment-backed settings
+- `contextpr.integrations.github`: GitHub API client
+- `contextpr.integrations.sonarqube`: SonarQube/SonarCloud client
+- `contextpr.enrichment`: historical retrieval and guidance building
+- `contextpr.persistence`: SQLite history store
+- `contextpr.services`: orchestration and comment composition
 
 ## Enrichment strategy
 
-ContextPR's production enrichment path is deterministic, case-based, and history-aware:
+ContextPR does not try to explain every Sonar issue.
+
+It adds extra context only when a historical case is strong enough to be useful. The important
+idea is:
 
 ```text
-current Sonar issue -> ranked local Sonar cases -> confidence gate -> evidence-backed comment
+current issue -> similar historical cases -> match-score gate -> comment or silence
 ```
 
-The implementation prefers concrete historical cases over repository-level aggregate trends. A
-historical case contains the Sonar rule, message, file path, line, disposition, similarity score,
-confidence score, compact evidence facts, and an optional fix reference.
+The project currently uses:
 
-The confidence gate is intentionally conservative:
+- local Sonar issue history as the primary signal
+- historical PR/file evidence as supporting evidence
+- dataset matches only when local history is missing or weak
 
-```text
-confidence < 70% -> no ContextPR enrichment
-confidence >= 70% -> compact evidence-backed guidance
-confidence >= 90% with a PR-linked fix -> richer precedent template
-```
+Typical guidance output is compact:
 
-The supported guidance decisions are:
+1. original Sonar message
+2. decision
+3. historical match score
+4. one short reason
+5. optionally, a precedent PR link
 
-- `likely worth fixing now`
-- `safe to defer`
-- `review carefully`
-- `similar fix available`
+## Persistence
 
-Weak history, sparse history, Git-only matches, PR-only matches, and review-comment-only matches
-do not create inline enrichment comments. Curated dataset matches can create comments, but only
-as a fallback when local Sonar history does not produce a qualifying case.
+The local history store is SQLite-based and keeps:
 
-Review comments are rendered as short paragraph-separated sections rather than one dense block.
-In practice this usually means:
+- Sonar issue history
+- Sonar issue observations
+- Git commit history
+- Git file touches
+- pull requests
+- pull request files
+- pull request review comments
+- sync checkpoints
 
-1. the original Sonar message
-2. `ContextPR: <decision> · <confidence>% confidence`
-3. one compact reason sentence
-4. optionally, one closest precedent link or high-confidence PR-linked fix explanation
+This store is operational state, not source-of-truth business data. Sonar and GitHub remain the
+authoritative systems.
 
-## Historical context
+## GitHub workflow
 
-ContextPR stores several kinds of repository history, and the inline enrichment path prefers
-local Sonar issue history before consulting the curated dataset fallback.
+The repository currently keeps the suggested GitHub Actions workflow in [../action.yml](../action.yml).
 
-The local repository history store can include:
+That workflow:
 
-- Sonar project issue history
-- repository commit/file-touch history
-- merged pull request/file history
-- historical GitHub review comments
+- restores the local history cache
+- runs ContextPR
+- saves the updated cache
+- cleans older cache entries
 
-In v1 of the case-based enrichment flow, Git, pull request, and review-comment records are
-supporting evidence only. They may help attribute a resolved Sonar case to a merged pull request
-or strengthen confidence for that case, but they cannot independently create an inline enriched
-comment.
+## Design trade-offs
 
-In GitHub Actions deployments, the SQLite history database can be treated as a rolling cache
-rather than a permanent store. A workflow can restore the latest cached `history.db`, run an
-incremental sync, save a new immutable cache entry, and then delete older cache versions. This
-keeps repeated pull request analyses fast while preserving the design assumption that the
-authoritative systems are still Sonar and GitHub.
+The project intentionally prefers:
 
-Historical retrieval scores previous Sonar issues using rule match, message similarity, path
-proximity, issue type, severity, tags, lifecycle disposition, recency, and optional fix-reference
-evidence. The result is a ranked list of historical cases, not an aggregate trend paragraph.
+- explicit Python code over heavy abstractions
+- deterministic heuristics over opaque generation
+- silence over weak review comments
+- repository-local evidence over generic fallback guidance
 
-When local Sonar history contains a resolved issue that can be attributed to a merged pull request,
-ContextPR can attach a historical PR reference. That path is intentionally stricter than compact
-case guidance: the comment uses the richer PR-linked precedent template only when the historical
-fix has at least 90% confidence.
-
-## Dataset artifact
-
-The curated dataset is optional.
-
-- It is not required for repository-local enrichment.
-- Its configuration path is retained for backward compatibility.
-- The dataset normalization utility remains available for offline experiments.
-- `contextpr analyze` loads it only as a fallback when local Sonar history does not produce a
-  confident historical case.
-- Dataset-backed comments include an explicit disclaimer that their confidence comes from
-  cross-project issue matches rather than repository-local precedent.
-
-By default, the configuration points to:
-
-```text
-dataset/curated_issues_data.xlsx
-```
-
-In this repository, `dataset/` is git-ignored, so the dataset is treated as a local experimental
-artifact rather than a checked-in project asset.
-
-## Reusable action packaging
-
-The repository is set up so the Python package remains the source of truth and the GitHub
-Action acts only as a wrapper around it.
-
-- `action.yml` defines the public inputs exposed to consuming repositories.
-- `Dockerfile` packages a stable Python runtime plus the installed `contextpr` package.
-- `scripts/action-entrypoint.sh` maps GitHub Action inputs to environment variables and
-  invokes the CLI.
-
-This keeps local development and automation aligned. A feature added to the CLI becomes
-available to the GitHub Action without duplicating the implementation in a separate codebase.
-
-## Extension points
-
-The implementation leaves room for:
-
-- richer domain models for findings and comments
-- additional rule mappings and language-specific pattern tables
-- retrieval evaluation and stronger historical ranking
-- prompt templates or LLM-assisted rewriting behind strict grounding and abstention
-- SonarCloud and self-hosted SonarQube compatibility
-
-## Operational expectations
-
-The repository is configured for:
-
-- Python 3.12+
-- editable local development installs
-- `pytest` for tests
-- `ruff` for linting and formatting
-- `mypy` for static type checking
-- GitHub Actions CI for validation on push and pull request events
+That trade-off makes the system easier to inspect, debug, and defend in a dissertation context.

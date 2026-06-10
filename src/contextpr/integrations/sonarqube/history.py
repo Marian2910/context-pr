@@ -3,17 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from contextpr.integrations import sonarqube_mapper
-from contextpr.integrations.sonarqube_client import SonarQubeHttpClient
-from contextpr.integrations.sonarqube_types import (
-    LOCAL_SONAR_SYNC_SOURCE,
-    SonarProjectHistoryPageResult,
-    SonarProjectHistorySyncResult,
-)
 from contextpr.persistence import (
     HistoryStore,
     SonarIssueObservationRecord,
     SyncStateRecord,
+)
+
+from . import mapper as sonarqube_mapper
+from .client import SonarQubeHttpClient
+from .types import (
+    LOCAL_SONAR_SYNC_SOURCE,
+    SonarProjectHistoryPageResult,
+    SonarProjectHistorySyncResult,
 )
 
 
@@ -118,9 +119,9 @@ class SonarProjectHistorySync:
             )
         )
 
+    @staticmethod
     def persist_sync_state(
-        self,
-        store: HistoryStore,
+            store: HistoryStore,
         repository_key: str,
         latest_update: str | None,
     ) -> None:
@@ -179,9 +180,9 @@ class SonarProjectHistorySync:
             latest_update=latest_update,
         )
 
+    @staticmethod
     def sync_project_issue_record(
-        self,
-        *,
+            *,
         store: HistoryStore,
         repository_key: str,
         raw_issue: Mapping[str, object],

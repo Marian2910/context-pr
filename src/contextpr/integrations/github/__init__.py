@@ -10,7 +10,6 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from contextpr.config import Settings
-from contextpr.integrations.github_auth import GitHubAuth
 from contextpr.models import (
     ExistingReviewComment,
     GitHubReviewComment,
@@ -27,6 +26,8 @@ from contextpr.persistence import (
     SyncStateRecord,
 )
 from contextpr.services.review_comments import COMMENT_MARKER_PREFIX
+
+from .auth import GitHubAuth
 
 logger = logging.getLogger(__name__)
 LOCAL_GITHUB_SYNC_SOURCE = "local_github_history"
@@ -95,9 +96,6 @@ class GitHubClient:
         self._auth = GitHubAuth(settings)
         if self._settings.github_repository and self._auth.auth_mode != "none":
             logger.info("Configured GitHub client.", extra={"auth_mode": self._auth.auth_mode})
-
-    def is_configured(self) -> bool:
-        return self._settings.github_enabled
 
     def get_pull_request_files(self, pull_request: PullRequestRef) -> list[PullRequestFile]:
         payload = self._get_json_list(

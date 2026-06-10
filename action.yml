@@ -1,47 +1,80 @@
-name: "ContextPR"
-description: "Run ContextPR against a pull request and prepare contextual Sonar feedback."
-author: "ContextPR Contributors"
+name: ContextPR
 
-inputs:
-  github-token:
-    description: "GitHub token used for pull request comment operations. Defaults to github.token."
-    required: false
-  github-api-url:
-    description: "Base GitHub API URL."
-    required: false
-    default: "https://api.github.com"
-  github-repository:
-    description: "Repository in owner/name form. Defaults to the workflow repository."
-    required: false
-  sonar-token:
-    description: "SonarQube or SonarCloud token."
-    required: true
-  sonar-host-url:
-    description: "Base SonarQube or SonarCloud URL."
-    required: false
-    default: "https://sonarcloud.io"
-  sonar-organization:
-    description: "Sonar organization identifier."
-    required: false
-  sonar-project-key:
-    description: "Sonar project key."
-    required: true
-  pr-number:
-    description: "Pull request number to analyze."
-    required: true
-  dry-run:
-    description: "Whether to avoid posting changes and only preview the flow."
-    required: false
-    default: "true"
-  log-level:
-    description: "Application log level."
-    required: false
-    default: "INFO"
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
-runs:
-  using: "docker"
-  image: "Dockerfile"
+jobs:
+  contextpr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
 
-branding:
-  icon: "message-square"
-  color: "blue"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Ensure ContextPR state directory exists
+        run: mkdir -p .context-pr
+
+      - name: Restore ContextPR history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .context-pr/history.db
+          key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
+          restore-keys: |
+            contextpr-history-${{ github.repository }}-v1-
+
+      - name: Run ContextPR
+        uses: Marian2910/context-pr@main
+        env:
+          CONTEXTPR_GITHUB_APP_ID: ${{ secrets.CONTEXTPR_GITHUB_APP_ID }}
+          CONTEXTPR_GITHUB_INSTALLATION_ID: ${{ secrets.CONTEXTPR_GITHUB_INSTALLATION_ID }}
+
+          CONTEXTPR_ENABLE_LOCAL_HISTORY: "true"
+          CONTEXTPR_LOCAL_HISTORY_DB_PATH: ${{ github.workspace }}/.context-pr/history.db
+
+          CONTEXTPR_SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          CONTEXTPR_SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
+          CONTEXTPR_SONAR_PROJECT_KEY: ${{ secrets.PROJECT_KEY }}
+          CONTEXTPR_SONAR_HOST_URL: https://sonarcloud.io
+
+          CONTEXTPR_GITHUB_REPOSITORY: ${{ github.repository }}
+          CONTEXTPR_PR_NUMBER: ${{ github.event.pull_request.number }}
+          CONTEXTPR_DRY_RUN: "false"
+
+      - name: Save updated ContextPR history cache
+        if: always() && hashFiles('.context-pr/history.db') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .context-pr/history.db
+          key: contextpr-history-${{ github.repository }}-v1-${{ github.run_id }}
+
+      - name: Delete older ContextPR caches but keep latest 3
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PREFIX: contextpr-history-${{ github.repository }}-v1-
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPO/actions/caches?per_page=100" > caches.json
+
+          jq -r --arg prefix "$PREFIX" '
+            .actions_caches
+            | map(select(.key | startswith($prefix)))
+            | sort_by(.last_accessed_at)
+            | reverse
+            | .[3:]
+            | .[].id
+          ' caches.json | while read -r cache_id; do
+            if [ -n "$cache_id" ]; then
+              gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$REPO/actions/caches/$cache_id"
+            fi
+          done

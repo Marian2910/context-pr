@@ -6,7 +6,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from contextpr.enrichment.history.dataset import DatasetHistoryRetriever
 from contextpr.enrichment.history import (
     CombinedHistoricalContext,
     EvidenceBackedGuidance,
@@ -15,10 +14,11 @@ from contextpr.enrichment.history import (
     HistoricalIssueCase,
     LocalSonarHistoryRetriever,
 )
+from contextpr.enrichment.history.dataset import DatasetHistoryRetriever
 from contextpr.models import SonarIssue
 from contextpr.persistence import HistoryStore
 
-MIN_ENRICHMENT_CONFIDENCE = 0.70
+MIN_ENRICHMENT_MATCH_SCORE = 0.70
 
 
 class CaseHistoryRetriever(Protocol):
@@ -98,12 +98,12 @@ class IssueEnricher:
         summary: HistoricalEvidenceSummary,
     ) -> DeveloperGuidance | None:
         case = summary.best_case()
-        if case is None or case.confidence < MIN_ENRICHMENT_CONFIDENCE:
+        if case is None or case.match_score < MIN_ENRICHMENT_MATCH_SCORE:
             return None
 
         evidence = EvidenceBackedGuidance(
             decision=self._decision(issue, case),
-            confidence=case.confidence,
+            match_score=case.match_score,
             reason=self._reason(issue, summary, case),
             case_type=case.case_type,
             case_key=case.issue_key,
@@ -134,7 +134,9 @@ class IssueEnricher:
         issue_type = issue.issue_type.strip().upper()
         if issue_type in {"VULNERABILITY", "SECURITY_HOTSPOT", "SECURITY", "HOTSPOT"}:
             return True
-        return issue.rule.lower().startswith(("pythonsecurity:", "javasecurity:", "javascriptsecurity:"))
+        return issue.rule.lower().startswith(
+            ("pythonsecurity:", "javasecurity:", "javascriptsecurity:")
+        )
 
     @staticmethod
     def _precedent_url(case: HistoricalIssueCase) -> str | None:

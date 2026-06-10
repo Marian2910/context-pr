@@ -13,7 +13,7 @@ from contextpr.enrichment.history.utils import token_overlap
 from contextpr.models import SonarIssue
 
 MIN_DATASET_SCORE = 0.55
-MAX_DATASET_CONFIDENCE = 0.82
+MAX_DATASET_MATCH_SCORE = 0.82
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +75,7 @@ class DatasetHistoryRetriever:
 
 
 def _build_case(issue: SonarIssue, match: DatasetMatch) -> HistoricalIssueCase:
-    confidence = round(min(match.score, MAX_DATASET_CONFIDENCE), 2)
+    match_score = round(min(match.score, MAX_DATASET_MATCH_SCORE), 2)
     evidence = (
         "fallback signal from curated cross-project issue history",
         f"dataset classification `{match.classification}`",
@@ -90,7 +90,7 @@ def _build_case(issue: SonarIssue, match: DatasetMatch) -> HistoricalIssueCase:
         line=issue.location.line,
         disposition=match.classification,
         similarity_score=match.score,
-        confidence=confidence,
+        match_score=match_score,
         case_type=match.case_type,
         evidence=evidence,
         fix_reference=None,
