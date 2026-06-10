@@ -65,18 +65,17 @@ def test_github_app_settings_enable_github_auth(monkeypatch: pytest.MonkeyPatch)
     assert settings.github_enabled is True
 
 
-def test_github_token_enables_github_auth() -> None:
-    """A token should enable GitHub auth without app credentials."""
+def test_github_requires_app_credentials_to_be_enabled() -> None:
     settings = Settings.from_env(
         {
-            "CONTEXTPR_GITHUB_TOKEN": "workflow-token",
+            "CONTEXTPR_GITHUB_APP_ID": "12345",
             "CONTEXTPR_GITHUB_REPOSITORY": "octo/example",
         }
     )
 
-    assert settings.github_token_enabled is True
-    assert settings.github_auth_mode == "token"
-    assert settings.github_enabled is True
+    assert settings.github_app_enabled is False
+    assert settings.github_auth_mode == "none"
+    assert settings.github_enabled is False
 
 
 def test_local_history_flag_can_be_enabled_from_env() -> None:

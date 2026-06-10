@@ -15,7 +15,7 @@ from contextpr.integrations.github import (
     GitHubHistorySyncResult,
 )
 from contextpr.integrations.sonarqube import SonarProjectHistorySyncResult
-from contextpr.integrations.sonarqube_types import LOCAL_SONAR_SYNC_SOURCE
+from contextpr.integrations.sonarqube.types import LOCAL_SONAR_SYNC_SOURCE
 from contextpr.models import PullRequestRef
 from contextpr.persistence import HistoryStore, SyncStateRecord
 from contextpr.services import AnalysisResult
@@ -43,12 +43,12 @@ class FakeService:
 def test_analyze_command_reports_run_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
-    monkeypatch.setattr("contextpr.cli.GitHubClient", lambda settings: object())
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: object())
-    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+    monkeypatch.setattr("contextpr.cli.analysis.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.analysis.SonarQubeClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.analysis.IssueEnricher", lambda **_: object())
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(),
     )
 
@@ -64,12 +64,12 @@ def test_analyze_command_reports_run_summary(
 def test_analyze_pr_command_reports_run_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
-    monkeypatch.setattr("contextpr.cli.GitHubClient", lambda settings: object())
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: object())
-    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+    monkeypatch.setattr("contextpr.cli.analysis.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.analysis.SonarQubeClient", lambda settings: object())
+    monkeypatch.setattr("contextpr.cli.analysis.IssueEnricher", lambda **_: object())
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(),
     )
 
@@ -94,7 +94,7 @@ def _settings_env(**overrides: Any) -> object:
 
 def test_analyze_requires_pr_number(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(),
     )
     result = runner.invoke(app, ["analyze", "--dry-run"])
@@ -185,16 +185,19 @@ def test_analyze_syncs_local_history_when_enabled(
             )
 
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(
             local_history_enabled=True,
             local_history_db_path=tmp_path / "cli-history.db",
         ),
     )
-    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
-    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
-    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+    monkeypatch.setattr("contextpr.cli.analysis.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr(
+        "contextpr.cli.analysis.SonarQubeClient",
+        lambda settings: FakeSonarClient(),
+    )
+    monkeypatch.setattr("contextpr.cli.analysis.IssueEnricher", lambda **_: object())
 
     result = runner.invoke(app, ["analyze", "--pr-number", "123", "--dry-run"])
 
@@ -246,16 +249,19 @@ def test_analyze_skips_local_history_sync_when_index_is_fresh(
             raise AssertionError("sync should be skipped")
 
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(
             local_history_enabled=True,
             local_history_db_path=db_path,
         ),
     )
-    monkeypatch.setattr("contextpr.cli.AnalysisService", lambda **_: FakeService())
-    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
-    monkeypatch.setattr("contextpr.cli.IssueEnricher", lambda **_: object())
+    monkeypatch.setattr("contextpr.cli.analysis.AnalysisService", lambda **_: FakeService())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr(
+        "contextpr.cli.analysis.SonarQubeClient",
+        lambda settings: FakeSonarClient(),
+    )
+    monkeypatch.setattr("contextpr.cli.analysis.IssueEnricher", lambda **_: object())
 
     result = runner.invoke(app, ["analyze", "--pr-number", "123", "--dry-run"])
 
@@ -325,14 +331,17 @@ def test_sync_history_command_runs_all_local_syncers(
             )
 
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(
             local_history_enabled=True,
             local_history_db_path=tmp_path / "cli-history.db",
         ),
     )
-    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr(
+        "contextpr.cli.analysis.SonarQubeClient",
+        lambda settings: FakeSonarClient(),
+    )
 
     result = runner.invoke(app, ["sync-history"])
 
@@ -403,14 +412,17 @@ def test_sync_alias_runs_all_local_syncers(
             )
 
     monkeypatch.setattr(
-        "contextpr.cli.Settings.from_env",
+        "contextpr.cli.analysis.Settings.from_env",
         lambda *_args, **_kwargs: _settings_env(
             local_history_enabled=True,
             local_history_db_path=tmp_path / "cli-history.db",
         ),
     )
-    monkeypatch.setattr("contextpr.cli.GitHubClient", FakeGitHubClient)
-    monkeypatch.setattr("contextpr.cli.SonarQubeClient", lambda settings: FakeSonarClient())
+    monkeypatch.setattr("contextpr.cli.analysis.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr(
+        "contextpr.cli.analysis.SonarQubeClient",
+        lambda settings: FakeSonarClient(),
+    )
 
     result = runner.invoke(app, ["sync"])
 
@@ -522,7 +534,7 @@ def test_guard_fails_when_local_paths_are_tracked(
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    (repo / ".env").write_text("CONTEXTPR_GITHUB_TOKEN=secret\n", encoding="utf-8")
+    (repo / ".env").write_text("CONTEXTPR_GITHUB_APP_ID=secret\n", encoding="utf-8")
     subprocess.run(["git", "add", ".env"], cwd=repo, check=True, capture_output=True)
     monkeypatch.chdir(repo)
 
@@ -543,8 +555,8 @@ def test_update_runs_pip_upgrade_command(monkeypatch: pytest.MonkeyPatch) -> Non
         assert check is False
         return FakeCompletedProcess()
 
-    monkeypatch.setattr("contextpr.cli.sys.executable", "/opt/contextpr/bin/python")
-    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("contextpr.cli.maintenance.sys.executable", "/opt/contextpr/bin/python")
+    monkeypatch.setattr("contextpr.cli.maintenance.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["update"], env={})
 
@@ -576,10 +588,10 @@ def test_update_uses_pipx_when_running_from_pipx_venv(
         return FakeCompletedProcess()
 
     monkeypatch.setattr(
-        "contextpr.cli.sys.executable",
+        "contextpr.cli.maintenance.sys.executable",
         "/Users/example/.local/pipx/venvs/contextpr/bin/python",
     )
-    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("contextpr.cli.maintenance.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["update"], env={})
 
@@ -599,8 +611,8 @@ def test_uninstall_runs_pip_uninstall_command(monkeypatch: pytest.MonkeyPatch) -
         assert check is False
         return FakeCompletedProcess()
 
-    monkeypatch.setattr("contextpr.cli.sys.executable", "/opt/contextpr/bin/python")
-    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("contextpr.cli.maintenance.sys.executable", "/opt/contextpr/bin/python")
+    monkeypatch.setattr("contextpr.cli.maintenance.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["uninstall"], env={})
 
@@ -622,10 +634,10 @@ def test_uninstall_uses_pipx_when_running_from_pipx_venv(
         return FakeCompletedProcess()
 
     monkeypatch.setattr(
-        "contextpr.cli.sys.executable",
+        "contextpr.cli.maintenance.sys.executable",
         "/Users/example/.local/pipx/venvs/contextpr/bin/python",
     )
-    monkeypatch.setattr("contextpr.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("contextpr.cli.maintenance.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["uninstall"], env={})
 

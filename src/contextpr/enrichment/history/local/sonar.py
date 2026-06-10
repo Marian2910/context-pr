@@ -79,7 +79,7 @@ class LocalSonarHistoryRetriever:
                     for record, score in similar
                 ),
                 key=lambda case: (
-                    case.confidence,
+                    case.match_score,
                     case.fix_reference is not None,
                     case.similarity_score,
                 ),
@@ -119,7 +119,7 @@ class LocalSonarHistoryRetriever:
         disposition = self._disposition_bucket(record)
         fix_reference = self._fix_reference_for_case(record, fix_references)
         case_type = self._case_type(issue, disposition, fix_reference)
-        confidence = self._case_confidence(issue, record, score, disposition, fix_reference)
+        match_score = self._case_match_score(issue, record, score, disposition, fix_reference)
         return HistoricalIssueCase(
             issue_key=record.issue_key,
             rule=record.rule,
@@ -128,7 +128,7 @@ class LocalSonarHistoryRetriever:
             line=record.line,
             disposition=disposition,
             similarity_score=round(min(score / LOCAL_SONAR_SCORE_SCALE, 1.0), 4),
-            confidence=confidence,
+            match_score=match_score,
             case_type=case_type,
             evidence=self._case_evidence(issue, record, disposition, fix_reference),
             fix_reference=fix_reference,
@@ -162,7 +162,7 @@ class LocalSonarHistoryRetriever:
         return HistoricalCaseType.PERSISTENT
 
     @staticmethod
-    def _case_confidence(
+    def _case_match_score(
         issue: SonarIssue,
         record: SonarIssueRecord,
         score: float,
@@ -170,20 +170,20 @@ class LocalSonarHistoryRetriever:
         fix_reference: HistoricalFixReference | None,
     ) -> float:
         if fix_reference is not None:
-            return fix_reference.confidence
+            return fix_reference.match_score
         record_path = component_path(record.component)
-        confidence = 0.45 * min(score / LOCAL_SONAR_SCORE_SCALE, 1.0)
+        match_score = 0.45 * min(score / LOCAL_SONAR_SCORE_SCALE, 1.0)
         if record.rule == issue.rule:
-            confidence += 0.2
+            match_score += 0.2
         if record_path == issue.location.path:
-            confidence += 0.2
+            match_score += 0.2
         elif path_family(record_path) == path_family(issue.location.path):
-            confidence += 0.12
+            match_score += 0.12
         if disposition in {"resolved", "accepted", "persistent"}:
-            confidence += 0.1
+            match_score += 0.1
         if record.line is not None:
-            confidence += 0.05
-        return round(min(confidence, 1.0), 2)
+            match_score += 0.05
+        return round(min(match_score, 1.0), 2)
 
     @staticmethod
     def _case_evidence(
@@ -307,16 +307,16 @@ class LocalSonarHistoryRetriever:
         return sonar_fix_refs.bounded_fix_reference_pull_requests(pull_requests)
 
     @staticmethod
-    def _fix_reference_confidence(
+    def _fix_reference_match_score(
         issue: SonarIssue,
         record: SonarIssueRecord,
         files: list[PullRequestFileRecord],
     ) -> float:
-        return sonar_fix_refs.fix_reference_confidence(issue, record, files)
+        return sonar_fix_refs.fix_reference_match_score(issue, record, files)
 
     @staticmethod
-    def _location_confidence_bonus(issue_path: str, record_path: str) -> float:
-        return sonar_fix_refs.location_confidence_bonus(issue_path, record_path)
+    def _location_match_score_bonus(issue_path: str, record_path: str) -> float:
+        return sonar_fix_refs.location_match_score_bonus(issue_path, record_path)
 
     @staticmethod
     def _fix_reference_evidence(

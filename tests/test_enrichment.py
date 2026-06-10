@@ -140,12 +140,15 @@ def test_local_sonar_fixed_case_builds_compact_guidance(tmp_path: Path) -> None:
     assert enrichment is not None
     evidence = enrichment.guidance.evidence
     assert evidence.decision == "likely worth fixing now"
-    assert evidence.confidence >= 0.7
+    assert evidence.match_score >= 0.7
     assert evidence.case_type is HistoricalCaseType.PREVIOUS_FIX
     assert evidence.precedent_url == "https://github.com/octo/example/pull/42/files"
     assert evidence.precedent_pr_number == 42
     assert any("historical issue was near line" in item for item in evidence.precedent_evidence)
-    assert "Repository history for `python:S1172` includes similar cases that were fixed" in evidence.reason
+    assert (
+        "Repository history for `python:S1172` includes similar cases that were fixed"
+        in evidence.reason
+    )
     assert "including one in this file" in evidence.reason
 
 
@@ -426,7 +429,10 @@ def test_dataset_retriever_supports_multiple_classifications_and_caps_top_matche
     assert dataset_summary.fixed_cases_count == 2
     assert dataset_summary.accepted_cases_count == 1
     assert dataset_summary.persistent_cases_count == 1
-    assert any(case.case_type is HistoricalCaseType.REVIEW_CAREFULLY for case in dataset_summary.cases)
+    assert any(
+        case.case_type is HistoricalCaseType.REVIEW_CAREFULLY
+        for case in dataset_summary.cases
+    )
 
 
 def test_dataset_fallback_returns_none_for_weak_or_unmapped_matches(tmp_path: Path) -> None:
@@ -486,7 +492,7 @@ def test_dataset_scoring_and_case_helpers_cover_remaining_branches() -> None:
             component="",
         ),
     )
-    assert case.confidence == 0.82
+    assert case.match_score == 0.82
     assert not any("matched dataset component" in item for item in case.evidence)
 
 
@@ -502,7 +508,7 @@ def test_historical_context_prefers_dataset_when_local_history_is_missing() -> N
                 line=12,
                 disposition="fix",
                 similarity_score=0.8,
-                confidence=0.8,
+                match_score=0.8,
                 case_type=HistoricalCaseType.PREVIOUS_FIX,
                 evidence=(),
             ),

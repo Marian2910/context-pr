@@ -11,6 +11,8 @@ from contextpr.integrations.sonarqube import (
     SonarProjectHistorySyncResult,
     SonarQubeClient,
 )
+from contextpr.integrations.sonarqube.client import SonarQubeHttpClient
+from contextpr.integrations.sonarqube.history import SonarProjectHistorySync
 from contextpr.persistence import HistoryStore, SyncStateRecord
 
 
@@ -278,15 +280,16 @@ def test_sync_project_issue_history_stops_when_it_reaches_existing_checkpoint(
 
 
 def test_sync_project_issue_record_skips_observation_when_no_timestamp(tmp_path: Path) -> None:
-    client = SonarQubeClient(
-        Settings(
-            sonar_token="sonar-token",
-            sonar_project_key="contextpr",
-        )
+    settings = Settings(
+        sonar_token="sonar-token",
+        sonar_project_key="contextpr",
+    )
+    history_sync = SonarProjectHistorySync(
+        SonarQubeHttpClient(settings, lambda _request: None)
     )
     store = HistoryStore(tmp_path / "history.db")
 
-    recorded = client._sync_project_issue_record(
+    recorded = history_sync.sync_project_issue_record(
         store=store,
         repository_key="octo/example",
         raw_issue={

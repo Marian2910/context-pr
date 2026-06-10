@@ -26,7 +26,9 @@ def test_action_entrypoint_reads_input_names(tmp_path: Path) -> None:
                 "os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
                 "        'CONTEXTPR_GITHUB_REPOSITORY': "
                 "os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
-                "        'CONTEXTPR_GITHUB_TOKEN': os.environ.get('CONTEXTPR_GITHUB_TOKEN'),",
+                "        'CONTEXTPR_GITHUB_APP_ID': os.environ.get('CONTEXTPR_GITHUB_APP_ID'),",
+                "        'CONTEXTPR_GITHUB_INSTALLATION_ID': "
+                "os.environ.get('CONTEXTPR_GITHUB_INSTALLATION_ID'),",
                 "    },",
                 "} ))",
                 "PY",
@@ -40,7 +42,8 @@ def test_action_entrypoint_reads_input_names(tmp_path: Path) -> None:
     env["INPUT_SONAR_TOKEN"] = "sonar-token"
     env["INPUT_SONAR_PROJECT_KEY"] = "project-key"
     env["INPUT_GITHUB_REPOSITORY"] = "octo/example"
-    env["INPUT_GITHUB_TOKEN"] = "gh-token"
+    env["INPUT_GITHUB_APP_ID"] = "12345"
+    env["INPUT_GITHUB_INSTALLATION_ID"] = "67890"
     env["INPUT_PR_NUMBER"] = "42"
     env["INPUT_DRY_RUN"] = "false"
 
@@ -57,7 +60,8 @@ def test_action_entrypoint_reads_input_names(tmp_path: Path) -> None:
         "CONTEXTPR_SONAR_TOKEN": "sonar-token",
         "CONTEXTPR_SONAR_PROJECT_KEY": "project-key",
         "CONTEXTPR_GITHUB_REPOSITORY": "octo/example",
-        "CONTEXTPR_GITHUB_TOKEN": "gh-token",
+        "CONTEXTPR_GITHUB_APP_ID": "12345",
+        "CONTEXTPR_GITHUB_INSTALLATION_ID": "67890",
     }
 
 
@@ -80,7 +84,9 @@ def test_action_entrypoint_falls_back_to_contextpr_env_vars(tmp_path: Path) -> N
                 "os.environ.get('CONTEXTPR_SONAR_PROJECT_KEY'),",
                 "        'CONTEXTPR_GITHUB_REPOSITORY': "
                 "os.environ.get('CONTEXTPR_GITHUB_REPOSITORY'),",
-                "        'CONTEXTPR_GITHUB_TOKEN': os.environ.get('CONTEXTPR_GITHUB_TOKEN'),",
+                "        'CONTEXTPR_GITHUB_APP_ID': os.environ.get('CONTEXTPR_GITHUB_APP_ID'),",
+                "        'CONTEXTPR_GITHUB_INSTALLATION_ID': "
+                "os.environ.get('CONTEXTPR_GITHUB_INSTALLATION_ID'),",
                 "    },",
                 "} ))",
                 "PY",
@@ -94,7 +100,8 @@ def test_action_entrypoint_falls_back_to_contextpr_env_vars(tmp_path: Path) -> N
     env["CONTEXTPR_SONAR_TOKEN"] = "sonar-token"
     env["CONTEXTPR_SONAR_PROJECT_KEY"] = "project-key"
     env["CONTEXTPR_GITHUB_REPOSITORY"] = "octo/example"
-    env["CONTEXTPR_GITHUB_TOKEN"] = "gh-token"
+    env["CONTEXTPR_GITHUB_APP_ID"] = "12345"
+    env["CONTEXTPR_GITHUB_INSTALLATION_ID"] = "67890"
     env["CONTEXTPR_PR_NUMBER"] = "42"
     env["CONTEXTPR_DRY_RUN"] = "false"
 
@@ -111,5 +118,6 @@ def test_action_entrypoint_falls_back_to_contextpr_env_vars(tmp_path: Path) -> N
         "CONTEXTPR_SONAR_TOKEN": "sonar-token",
         "CONTEXTPR_SONAR_PROJECT_KEY": "project-key",
         "CONTEXTPR_GITHUB_REPOSITORY": "octo/example",
-        "CONTEXTPR_GITHUB_TOKEN": "gh-token",
+        "CONTEXTPR_GITHUB_APP_ID": "12345",
+        "CONTEXTPR_GITHUB_INSTALLATION_ID": "67890",
     }

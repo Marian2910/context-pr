@@ -103,16 +103,16 @@ class ReviewCommentComposer:
             return f"Same as in [{duplicate_reference}]."
 
         evidence = enrichment.guidance.evidence
-        confidence = round(evidence.confidence * 100)
+        match_score = round(evidence.match_score * 100)
         disclaimer = self.fallback_disclaimer(enrichment)
         if (
             evidence.precedent_url is not None
             and evidence.precedent_pr_number is not None
-            and evidence.confidence >= 0.9
+            and evidence.match_score >= 0.9
         ):
             return self.detailed_precedent_note(issue, enrichment)
 
-        summary = f"ContextPR: {evidence.decision} · historical match score of {confidence}%"
+        summary = f"ContextPR: {evidence.decision} · historical match score of {match_score}%"
         if disclaimer is None:
             summary = f"{summary} \nReason: {evidence.reason}"
 
@@ -122,20 +122,20 @@ class ReviewCommentComposer:
         ]
         if disclaimer is not None:
             sections.append(disclaimer)
-        if evidence.precedent_url is not None and evidence.confidence >= 0.9:
+        if evidence.precedent_url is not None and evidence.match_score >= 0.9:
             sections.append(f"Closest precedent:\n{evidence.precedent_url}")
         return "\n\n".join(sections)
 
     def detailed_precedent_note(self, issue: SonarIssue, enrichment: IssueEnrichment) -> str:
         evidence = enrichment.guidance.evidence
-        confidence = round(evidence.confidence * 100)
+        match_score = round(evidence.match_score * 100)
         evidence_lines = "\n".join(f"- {item}" for item in evidence.precedent_evidence)
         return "\n\n".join(
             (
                 self.normalize_sentence(issue.message),
                 (
                     "A similar fixed case is linked to "
-                    f"PR #{evidence.precedent_pr_number}, with a {confidence}% "
+                    f"PR #{evidence.precedent_pr_number}, with a {match_score}% "
                     "historical match score from Sonar resolution history."
                 ),
                 f"Why this match is shown:\n\n{evidence_lines}",

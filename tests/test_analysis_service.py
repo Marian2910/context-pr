@@ -254,8 +254,11 @@ def _enrichment(case_key: str) -> IssueEnrichment:
             level=GuidanceLevel.CONTEXTUAL,
             evidence=EvidenceBackedGuidance(
                 decision="likely worth fixing now",
-                confidence=0.86,
-                reason="Repository history for `python:S100` includes similar cases that were fixed.",
+                match_score=0.86,
+                reason=(
+                    "Repository history for `python:S100` includes similar cases that were "
+                    "fixed."
+                ),
                 case_type=HistoricalCaseType.PREVIOUS_FIX,
                 case_key=case_key,
                 precedent_url="https://github.com/org/repo/pull/9/files",

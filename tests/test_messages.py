@@ -24,7 +24,7 @@ def test_review_comment_uses_compact_evidence_format() -> None:
                 level=GuidanceLevel.CONTEXTUAL,
                 evidence=EvidenceBackedGuidance(
                     decision="likely worth fixing now",
-                    confidence=0.86,
+                    match_score=0.86,
                     reason=(
                         "Repository history for `python:S1192` includes similar cases that were "
                         "fixed, including one in this file."
@@ -48,7 +48,7 @@ def test_review_comment_uses_compact_evidence_format() -> None:
     assert "This seems worth fixing" not in note
 
 
-def test_review_comment_uses_detailed_template_for_high_confidence_precedent() -> None:
+def test_review_comment_uses_detailed_template_for_high_match_score_precedent() -> None:
     note = ReviewCommentComposer().reviewer_note(
         SonarIssue(
             key="issue-s1192",
@@ -66,7 +66,7 @@ def test_review_comment_uses_detailed_template_for_high_confidence_precedent() -
                 level=GuidanceLevel.CONTEXTUAL,
                 evidence=EvidenceBackedGuidance(
                     decision="likely worth fixing now",
-                    confidence=0.94,
+                    match_score=0.94,
                     reason=(
                         "Repository history for `python:S1192` includes similar cases that were "
                         "fixed, including one in this file."
@@ -117,7 +117,7 @@ def test_review_comment_omits_precedent_when_no_link_exists() -> None:
                 level=GuidanceLevel.CONTEXTUAL,
                 evidence=EvidenceBackedGuidance(
                     decision="safe to defer",
-                    confidence=0.78,
+                    match_score=0.78,
                     reason=(
                         "Repository history for `python:S1066` includes accepted or open cases."
                     ),
@@ -133,7 +133,7 @@ def test_review_comment_omits_precedent_when_no_link_exists() -> None:
     assert "Closest precedent:" not in note
 
 
-def test_review_comment_omits_precedent_for_non_high_confidence_match() -> None:
+def test_review_comment_omits_precedent_for_non_high_match_score() -> None:
     note = ReviewCommentComposer().reviewer_note(
         SonarIssue(
             key="issue-s1481",
@@ -148,8 +148,11 @@ def test_review_comment_omits_precedent_for_non_high_confidence_match() -> None:
                 level=GuidanceLevel.CONTEXTUAL,
                 evidence=EvidenceBackedGuidance(
                     decision="review carefully",
-                    confidence=0.79,
-                    reason="the closest same-rule historical match for `python:S1481` needs extra review.",
+                    match_score=0.79,
+                    reason=(
+                        "the closest same-rule historical match for `python:S1481` "
+                        "needs extra review."
+                    ),
                     case_type=HistoricalCaseType.REVIEW_CAREFULLY,
                     case_key="case-1481",
                     precedent_url="https://github.com/marian2910/httpie/pull/9/files",
@@ -171,7 +174,7 @@ def test_review_comment_adds_disclaimer_for_dataset_fallback() -> None:
             level=GuidanceLevel.CONTEXTUAL,
             evidence=EvidenceBackedGuidance(
                 decision="likely worth fixing now",
-                confidence=0.82,
+                match_score=0.82,
                 reason=(
                     "Cross-project dataset history for `python:S1172` includes similar cases "
                     "that were fixed."
@@ -214,7 +217,7 @@ def test_dataset_reason_does_not_expose_candidate_counts() -> None:
             level=GuidanceLevel.CONTEXTUAL,
             evidence=EvidenceBackedGuidance(
                 decision="likely worth fixing now",
-                confidence=0.82,
+                match_score=0.82,
                 reason=(
                     "Cross-project dataset history for `python:S1172` includes similar cases "
                     "that were fixed."
@@ -270,7 +273,7 @@ def test_review_comment_helpers_cover_remaining_branches() -> None:
                 level=GuidanceLevel.CONTEXTUAL,
                 evidence=EvidenceBackedGuidance(
                     decision="likely worth fixing now",
-                    confidence=0.82,
+                    match_score=0.82,
                     reason="reason",
                     case_type=HistoricalCaseType.PREVIOUS_FIX,
                     case_key="case-1",

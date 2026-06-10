@@ -12,7 +12,7 @@ class HistoricalFixReference:
     file_url: str | None
     file_path: str
     resolved_at: str
-    confidence: float
+    match_score: float
     evidence: tuple[str, ...]
 
 
@@ -32,7 +32,7 @@ class HistoricalIssueCase:
     line: int | None
     disposition: str | None
     similarity_score: float
-    confidence: float
+    match_score: float
     case_type: HistoricalCaseType
     evidence: tuple[str, ...]
     fix_reference: HistoricalFixReference | None = None
@@ -57,7 +57,7 @@ class HistoricalEvidenceSummary:
 @dataclass(frozen=True, slots=True)
 class EvidenceBackedGuidance:
     decision: str
-    confidence: float
+    match_score: float
     reason: str
     case_type: HistoricalCaseType
     case_key: str
@@ -91,4 +91,4 @@ RECENCY_DECAY_FLOOR = 0.35
 LOCAL_SONAR_SCORE_SCALE = 20.0
 FIX_REFERENCE_RECORD_LIMIT = 100
 MIN_FIX_REFERENCE_RECORD_SCORE = 0.6
-MIN_FIX_REFERENCE_CONFIDENCE = 0.7
+MIN_FIX_REFERENCE_MATCH_SCORE = 0.7
