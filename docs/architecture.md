@@ -14,17 +14,17 @@ The project is designed to stay deterministic and easy to explain:
 ## Main flow
 
 ```text
-CLI -> config -> SonarQube client -> enrichment -> review composer -> GitHub client
+CLI -> config -> optional history sync -> GitHub diff retrieval -> SonarQube issues -> enrichment -> review composer -> GitHub publishing
 ```
 
 For one pull request, the runtime flow is:
 
 1. load configuration
-2. fetch Sonar issues for the PR
-3. optionally sync local history into SQLite
-4. get changed PR files and lines from GitHub
+2. optionally sync local history into SQLite
+3. get changed PR files and lines from GitHub
+4. fetch Sonar issues for the PR
 5. retrieve similar historical cases
-6. keep only strong matches
+6. keep only strong matches for historical enrichment
 7. compose inline review comments
 8. post comments to GitHub
 
@@ -46,14 +46,14 @@ It adds extra context only when a historical case is strong enough to be useful.
 idea is:
 
 ```text
-current issue -> similar historical cases -> match-score gate -> comment or silence
+current issue -> similar historical cases -> match-score gate -> enriched guidance or plain Sonar message
 ```
 
 The project currently uses:
 
 - local Sonar issue history as the primary signal
 - historical PR/file evidence as supporting evidence
-- dataset matches only when local history is missing or weak
+- dataset matches only when local history does not return usable context
 
 Typical guidance output is compact:
 
