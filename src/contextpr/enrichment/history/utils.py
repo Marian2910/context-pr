@@ -1,48 +1,9 @@
 from __future__ import annotations
 
-import math
-from collections import Counter
-from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
 from contextpr.enrichment.history.constants import STOP_TOKENS, TEST_PATH_TOKENS, TOKEN_PATTERN
-from contextpr.models import SonarIssue
-
-
-def distribution(values: Iterable[object]) -> tuple[tuple[str, int], ...]:
-    counts = Counter(str(value) for value in values if str(value))
-    return tuple(counts.most_common())
-
-
-def dominant_share(
-    items: tuple[tuple[str, int], ...],
-    *,
-    sample_size: int,
-) -> tuple[str | None, float]:
-    if not items or sample_size <= 0:
-        return None, 0.0
-    label, count = items[0]
-    return label, round(count / sample_size, 4)
-
-
-def share(count: int, sample_size: int) -> float:
-    if sample_size <= 0:
-        return 0.0
-    return round(count / sample_size, 4)
-
-
-def distribution_share(
-    items: tuple[tuple[str, int], ...],
-    label: str,
-) -> float:
-    total = sum(count for _, count in items)
-    if total <= 0:
-        return 0.0
-    for current_label, count in items:
-        if current_label == label:
-            return round(count / total, 4)
-    return 0.0
 
 
 def component_path(component: str) -> str:
@@ -90,36 +51,6 @@ def content_tokens(value: str) -> tuple[str, ...]:
         for token in tokens(value)
         if len(token) > 2 and token not in STOP_TOKENS and not token.isdigit()
     )
-
-
-def salient_terms(
-    issue: SonarIssue,
-    documents: list[str],
-    *,
-    top_k: int = 3,
-) -> tuple[str, ...]:
-    issue_terms = set(
-        content_tokens(issue.message) + content_tokens(issue.location.path) + tuple(issue.tags)
-    )
-    if not issue_terms or not documents:
-        return ()
-
-    document_terms = [set(content_tokens(document)) for document in documents]
-    if not any(document_terms):
-        return ()
-
-    scores: list[tuple[str, float]] = []
-    document_count = len(document_terms)
-    for term in sorted(issue_terms):
-        document_frequency = sum(1 for terms in document_terms if term in terms)
-        if document_frequency == 0:
-            continue
-        term_frequency = sum(content_tokens(document).count(term) for document in documents)
-        idf = math.log((1 + document_count) / (1 + document_frequency)) + 1.0
-        scores.append((term, term_frequency * idf))
-
-    scores.sort(key=lambda item: (item[1], item[0]), reverse=True)
-    return tuple(term for term, _score in scores[:top_k])
 
 
 def parse_timestamp(value: str | None) -> datetime | None:

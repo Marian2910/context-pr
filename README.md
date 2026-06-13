@@ -12,17 +12,19 @@ The current implementation is intentionally deterministic:
 - Sonar findings are the input.
 - Local repository history is the primary evidence source.
 - A curated dataset can be used only as a fallback.
-- Comments are posted only when the historical match is strong enough.
+- Historical context is added only when the best retrieved match is strong enough.
 
 ## What it does
 
 For a pull request, ContextPR can:
 
-1. fetch Sonar issues for the PR
-2. sync repository-local Sonar, PR, review, and commit history into SQLite
-3. rank similar historical cases
-4. generate compact review comments
-5. publish those comments on GitHub
+1. load configuration and initialize clients
+2. optionally sync repository-local Sonar, PR, review, and commit history into SQLite
+3. fetch GitHub pull request files and changed lines
+4. fetch Sonar issues for the PR
+5. retrieve and rank similar historical cases
+6. generate compact review comments
+7. publish those comments on GitHub
 
 ## Project structure
 
@@ -134,7 +136,7 @@ That file shows the expected automation setup:
 - save the updated history cache
 - prune older cache entries
 
-If you use the workflow example, make sure these secrets exist in the target repository:
+If you use the workflow example, make sure these secrets and files are available in the target repository environment:
 
 - `CONTEXTPR_GITHUB_APP_ID`
 - `CONTEXTPR_GITHUB_INSTALLATION_ID`
@@ -142,12 +144,23 @@ If you use the workflow example, make sure these secrets exist in the target rep
 - `SONAR_ORGANIZATION`
 - `PROJECT_KEY`
 
+The current implementation also expects the GitHub App private key to be available at:
+
+```text
+secrets/GITHUB_APP_PRIVATE_KEY.pem
+```
+
+The workflow example in `action.yml` does not currently show the step that materializes this PEM file inside the runner workspace, so it should be treated as a partial example rather than a complete copy-paste setup.
+
 ## Comment behavior
 
 ContextPR does not comment on every Sonar issue.
 
-It only emits enriched comments when the best historical case passes the match-score threshold.
-The usual output shape is:
+It only comments on issues that can be anchored to added lines in the pull request diff.
+When a strong historical match is available, the comment includes contextual guidance and a match score.
+Otherwise, the current implementation can still emit a plain Sonar-based inline comment.
+
+A typical enriched comment looks like:
 
 ```text
 <Sonar issue message>
